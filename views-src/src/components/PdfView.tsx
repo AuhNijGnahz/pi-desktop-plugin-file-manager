@@ -204,8 +204,13 @@ export function PdfView({ src, name, size, locale, t }: Props) {
           <option value="cover">{t("pdfCoverPage")}</option>
         </select>
         <div className="pdf-search">
-          <button type="button" aria-label={t("pdfSearch")} aria-pressed={searchOpen} title={t("pdfSearch")} disabled={disabled}
-            onClick={openSearch}>⌕</button>
+          <button className="pdf-search-toggle" type="button" aria-label={t("pdfSearch")} aria-pressed={searchOpen} title={t("pdfSearch")} disabled={disabled}
+            onClick={openSearch}>
+            <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth={2} strokeLinecap="round" aria-hidden="true" focusable="false">
+              <circle cx={10.5} cy={10.5} r={6.5} />
+              <path d="m16 16 4.5 4.5" />
+            </svg>
+          </button>
           {searchOpen ? <div className="pdf-search-controls">
             <input ref={searchInputRef} type="search" value={searchQuery} aria-label={t("pdfSearch")} placeholder={t("pdfSearchPlaceholder")} disabled={disabled}
               onChange={(event) => {

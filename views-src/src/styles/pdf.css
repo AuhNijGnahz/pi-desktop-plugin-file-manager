@@ -43,6 +43,8 @@
 .pdf-toolbar input::-webkit-inner-spin-button { appearance: none; }
 .pdf-toolbar select { max-width: 100%; padding: 2px 5px; }
 .pdf-search-controls { display: flex; min-width: 0; max-width: 100%; align-items: center; flex-wrap: wrap; gap: 4px; }
+.pdf-toolbar .pdf-search-toggle { display: grid; place-items: center; padding: 4px; }
+.pdf-search-toggle svg { display: block; width: 1.5em; height: 1.5em; min-width: 16px; min-height: 16px; }
 .pdf-search-controls input { width: min(18ch, 28vw); min-width: 92px; flex: 1 1 92px; text-align: left; }
 .pdf-search-status { max-width: 14ch; color: var(--muted); overflow-wrap: anywhere; white-space: normal; }
 .pdf-page-count { min-width: 32px; padding: 0 2px; }
