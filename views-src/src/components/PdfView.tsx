@@ -2,7 +2,7 @@ import { useCallback, useEffect, useRef, useState } from "react";
 import type { PDFDocumentProxy, PDFPageProxy } from "pdfjs-dist/legacy/build/pdf.mjs";
 import type { T } from "../i18n";
 import { createPdfSession } from "../lib/pdf";
-import { clampPdfZoom, createDocumentViewer, MAX_PDF_ZOOM, MIN_PDF_ZOOM, type DocumentViewer, type PdfSpread } from "../lib/pdfViewer";
+import { clampPdfZoom, createDocumentViewer, MAX_PDF_ZOOM, MIN_PDF_ZOOM, type DocumentViewer, type PdfFindState, type PdfSpread } from "../lib/pdfViewer";
 import { PdfSidebar, type PdfSidebarTab } from "./PdfSidebar";
 import "../styles/pdf.css";
 
@@ -23,9 +23,14 @@ export function PdfView({ src, name, size, locale, t }: Props) {
   const [sidebar, setSidebar] = useState(false);
   const [sidebarTab, setSidebarTab] = useState<PdfSidebarTab>("thumbnails");
   const [labels, setLabels] = useState<string[] | null>(null);
+  const [searchOpen, setSearchOpen] = useState(false);
+  const [searchQuery, setSearchQuery] = useState("");
+  const [searchCount, setSearchCount] = useState({ current: 0, total: 0 });
+  const [searchState, setSearchState] = useState<PdfFindState | null>(null);
   const bodyRef = useRef<HTMLDivElement>(null);
   const scrollRef = useRef<HTMLDivElement>(null);
   const pagesRef = useRef<HTMLDivElement>(null);
+  const searchInputRef = useRef<HTMLInputElement>(null);
   const controllerRef = useRef<DocumentViewer | null>(null);
   const tRef = useRef(t);
   tRef.current = t;
@@ -46,6 +51,10 @@ export function PdfView({ src, name, size, locale, t }: Props) {
     setZoom(null);
     setSpread("single");
     setLabels(null);
+    setSearchOpen(false);
+    setSearchQuery("");
+    setSearchCount({ current: 0, total: 0 });
+    setSearchState(null);
     const fail = (cause?: { name?: string }) => {
       if (cancelled || failed) return;
       failed = true;
@@ -53,6 +62,10 @@ export function PdfView({ src, name, size, locale, t }: Props) {
       setReady(false);
       setPdf(null);
       setRendering(false);
+      setSearchOpen(false);
+      setSearchQuery("");
+      setSearchCount({ current: 0, total: 0 });
+      setSearchState(null);
       controller?.destroy();
       controllerRef.current = null;
       void session?.destroy();
@@ -69,6 +82,12 @@ export function PdfView({ src, name, size, locale, t }: Props) {
           scale: (value) => { if (!cancelled && !failed) setRenderedZoom(value); },
           rendering: (busy) => { if (!cancelled && !failed) setRendering(busy); },
           failed: () => fail(),
+          find: (update) => {
+            if (!cancelled && !failed) {
+              setSearchCount(update.matchesCount);
+              setSearchState(update.state);
+            }
+          },
         });
         controllerRef.current = controller;
         void document.getPageLabels().then((value) => {
@@ -114,9 +133,57 @@ export function PdfView({ src, name, size, locale, t }: Props) {
   const changeZoom = (factor: number) => applyZoom(clampPdfZoom((controllerRef.current?.viewer.currentScale ?? renderedZoom) * factor));
   const disabled = !ready || Boolean(error);
   const pageLabel = labels?.[page - 1];
+  const openSearch = () => {
+    if (disabled) return;
+    setSearchOpen(true);
+    requestAnimationFrame(() => searchInputRef.current?.focus());
+  };
+  const clearSearch = () => {
+    controllerRef.current?.closeSearch();
+    setSearchCount({ current: 0, total: 0 });
+    setSearchState(null);
+  };
+  const closeSearch = () => {
+    clearSearch();
+    setSearchOpen(false);
+    setSearchQuery("");
+  };
+  const isTextInput = (target: EventTarget | null) => {
+    const element = target instanceof HTMLElement ? target : null;
+    return Boolean(element && (element.isContentEditable || ["INPUT", "TEXTAREA", "SELECT"].includes(element.tagName)));
+  };
+  const handleStageKeyDown = (event: React.KeyboardEvent<HTMLDivElement>) => {
+    if ((event.metaKey || event.ctrlKey) && event.key.toLowerCase() === "f" && !isTextInput(event.target)) {
+      event.preventDefault();
+      openSearch();
+      return;
+    }
+    if (event.key === "Escape") {
+      if (searchOpen) {
+        event.preventDefault();
+        closeSearch();
+      } else {
+        setSidebar(false);
+      }
+    }
+  };
+  const search = (again = false, previous = false, query = searchQuery) => {
+    if (!query.trim()) {
+      clearSearch();
+      return;
+    }
+    controllerRef.current?.search(query, again, previous);
+  };
+  const searchStatus = searchState === "PENDING"
+    ? `${t("pdfSearchSearching")}${searchCount.total > 0 ? ` ${t("pdfSearchCount", searchCount)}` : ""}`
+    : searchState === "NOT_FOUND"
+      ? t("pdfSearchNoMatches")
+      : searchCount.total > 0
+        ? t("pdfSearchCount", searchCount)
+        : null;
 
   return (
-    <div className="pdf-stage" aria-label={t("pdfPreview")} onKeyDown={(event) => { if (event.key === "Escape") setSidebar(false); }}>
+    <div className="pdf-stage" aria-label={t("pdfPreview")} onKeyDown={handleStageKeyDown}>
       <div className="pdf-toolbar" role="toolbar" aria-label={t("pdfPreview")}>
         <div className="pdf-navigation">
           <button type="button" aria-expanded={sidebar} aria-controls="pdf-navigation-sidebar" disabled={disabled} title={t("pdfSidebar")}
@@ -135,6 +202,34 @@ export function PdfView({ src, name, size, locale, t }: Props) {
           <option value="double">{t("pdfDoublePage")}</option>
           <option value="cover">{t("pdfCoverPage")}</option>
         </select>
+        <div className="pdf-search">
+          <button type="button" aria-label={t("pdfSearch")} aria-pressed={searchOpen} title={t("pdfSearch")} disabled={disabled}
+            onClick={openSearch}>⌕</button>
+          {searchOpen ? <div className="pdf-search-controls">
+            <input ref={searchInputRef} type="search" value={searchQuery} aria-label={t("pdfSearch")} placeholder={t("pdfSearchPlaceholder")} disabled={disabled}
+              onChange={(event) => {
+                const query = event.target.value;
+                setSearchQuery(query);
+                search(false, false, query);
+              }}
+              onKeyDown={(event) => {
+                if (event.key === "Enter") {
+                  event.preventDefault();
+                  search(true, event.shiftKey);
+                } else if (event.key === "Escape") {
+                  event.preventDefault();
+                  event.stopPropagation();
+                  closeSearch();
+                }
+              }} />
+            <span className="pdf-search-status" role="status" aria-live="polite">{searchStatus}</span>
+            <button type="button" aria-label={t("pdfSearchPrevious")} title={t("pdfSearchPrevious")} disabled={disabled || !searchQuery.trim()}
+              onClick={() => search(true, true)}>↑</button>
+            <button type="button" aria-label={t("pdfSearchNext")} title={t("pdfSearchNext")} disabled={disabled || !searchQuery.trim()}
+              onClick={() => search(true)}>↓</button>
+            <button type="button" aria-label={t("pdfSearchClose")} title={t("pdfSearchClose")} disabled={disabled} onClick={closeSearch}>×</button>
+          </div> : null}
+        </div>
         <div className="pdf-zoom">
           <button type="button" title={t("pdfZoomOut")} aria-label={t("pdfZoomOut")} disabled={disabled || renderedZoom <= MIN_PDF_ZOOM} onClick={() => changeZoom(1 / 1.25)}>−</button>
           <span className="pdf-zoom-value">{pdf ? `${Math.round(renderedZoom * 100)}%` : "—"}</span>

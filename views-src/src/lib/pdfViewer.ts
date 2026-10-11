@@ -2,7 +2,7 @@
 // Evaluate the matching compatibility API first, including in the IIFE build.
 import "pdfjs-dist/legacy/build/pdf.mjs";
 import { AnnotationEditorType, AnnotationMode, type PDFDocumentProxy, type PDFPageProxy } from "pdfjs-dist/legacy/build/pdf.mjs";
-import { EventBus, PDFLinkService, PDFViewer, RenderingStates, ScrollMode, SpreadMode } from "pdfjs-dist/legacy/web/pdf_viewer.mjs";
+import { EventBus, FindState, PDFFindController, PDFLinkService, PDFViewer, RenderingStates, ScrollMode, SpreadMode } from "pdfjs-dist/legacy/web/pdf_viewer.mjs";
 import type { T } from "../i18n";
 import { createPdfFitWidths, type PdfSpread } from "./pdfFit";
 
@@ -11,6 +11,10 @@ export const MIN_PDF_ZOOM = 0.1;
 export const MAX_PDF_ZOOM = 4;
 export const clampPdfZoom = (zoom: number) => Math.min(MAX_PDF_ZOOM, Math.max(MIN_PDF_ZOOM, zoom));
 
+export type PdfFindState = "PENDING" | "NOT_FOUND" | "FOUND" | "WRAPPED";
+export type PdfFindCount = { current: number; total: number };
+export type PdfFindUpdate = { matchesCount: PdfFindCount; state: PdfFindState };
+
 type Callbacks = {
   t: () => T;
   ready: () => void;
@@ -18,7 +22,15 @@ type Callbacks = {
   scale: (scale: number) => void;
   rendering: (busy: boolean) => void;
   failed: () => void;
+  find: (update: PdfFindUpdate) => void;
 };
+
+function findStateName(state: number): PdfFindState {
+  if (state === FindState.PENDING) return "PENDING";
+  if (state === FindState.NOT_FOUND) return "NOT_FOUND";
+  if (state === FindState.WRAPPED) return "WRAPPED";
+  return "FOUND";
+}
 
 /** A document-scoped PDFViewer, with no scripting, editing or remote l10n. */
 export function createDocumentViewer(container: HTMLDivElement, host: HTMLDivElement, pdf: PDFDocumentProxy, callbacks: Callbacks) {
@@ -31,6 +43,20 @@ export function createDocumentViewer(container: HTMLDivElement, host: HTMLDivEle
   let fit = true;
   let spread: PdfSpread = "single";
   let resizeFrame = 0;
+  let findClosed = true;
+  let findCount: PdfFindCount = { current: 0, total: 0 };
+  let findState: PdfFindState = "FOUND";
+  const originalGetPage = pdf.getPage;
+  const trackedGetPage = (pageNumber: number) => originalGetPage.call(pdf, pageNumber).catch((error) => {
+    // Invalid caller indexes (e.g. a transient thumbnail range) are not a
+    // document parsing failure. Only a valid page that fails to load is fatal.
+    if (!destroyed && Number.isInteger(pageNumber) && pageNumber >= 1 && pageNumber <= pdf.numPages) callbacks.failed();
+    throw error;
+  });
+  pdf.getPage = trackedGetPage;
+  const restoreGetPage = () => {
+    if (pdf.getPage === trackedGetPage) pdf.getPage = originalGetPage;
+  };
 
   // PDF.js types this as its concrete L10n class, but only calls these methods
   // in the read-only viewer. Page labels and all controls use the plugin's T.
@@ -44,8 +70,22 @@ export function createDocumentViewer(container: HTMLDivElement, host: HTMLDivEle
     pause: () => {},
     resume: () => {},
   } as unknown as NonNullable<ConstructorParameters<typeof PDFViewer>[0]["l10n"]>;
+  const findController = new PDFFindController({ linkService, eventBus, delay: 0, updateMatchesCountOnProgress: true });
+  const reportFind = () => callbacks.find({ matchesCount: findCount, state: findState });
+  eventBus.on("updatefindmatchescount", ({ matchesCount }: { matchesCount: PdfFindCount }) => {
+    if (destroyed || findClosed) return;
+    findCount = matchesCount;
+    reportFind();
+  }, { signal: lifetime.signal });
+  eventBus.on("updatefindcontrolstate", ({ state, matchesCount }: { state: number; matchesCount: PdfFindCount }) => {
+    if (destroyed || findClosed) return;
+    findState = findStateName(state);
+    findCount = matchesCount;
+    reportFind();
+  }, { signal: lifetime.signal });
   const options: ConstructorParameters<typeof PDFViewer>[0] & { abortSignal: AbortSignal } = {
     container, viewer: host, eventBus, linkService, l10n,
+    findController,
     abortSignal: lifetime.signal,
     annotationMode: AnnotationMode.DISABLE,
     annotationEditorMode: AnnotationEditorType.DISABLE,
@@ -56,9 +96,16 @@ export function createDocumentViewer(container: HTMLDivElement, host: HTMLDivEle
     maxCanvasDim: 8192,
     enableDetailCanvas: false,
   };
-  const viewer = new PDFViewer(options);
-  linkService.setViewer(viewer);
-  linkService.setDocument(pdf);
+  let viewer!: PDFViewer;
+  try {
+    viewer = new PDFViewer(options);
+    linkService.setViewer(viewer);
+    linkService.setDocument(pdf);
+  } catch (error) {
+    restoreGetPage();
+    lifetime.abort();
+    throw error;
+  }
 
   const labelPages = () => {
     for (let index = 0; index < viewer.pagesCount; index += 1) {
@@ -131,8 +178,42 @@ export function createDocumentViewer(container: HTMLDivElement, host: HTMLDivEle
     if (error) callbacks.failed();
     else if (pageNumber === viewer.currentPageNumber) callbacks.rendering(false);
   }, { signal: lifetime.signal });
-  viewer.setDocument(pdf);
+  try {
+    viewer.setDocument(pdf);
+  } catch (error) {
+    restoreGetPage();
+    lifetime.abort();
+    throw error;
+  }
   void viewer.pagesPromise?.catch(() => { if (!destroyed) callbacks.failed(); });
+
+  const closeSearch = () => {
+    if (destroyed) return;
+    findClosed = true;
+    eventBus.dispatch("findbarclose", { source: eventBus });
+    findCount = { current: 0, total: 0 };
+    findState = "FOUND";
+    callbacks.find({ matchesCount: findCount, state: findState });
+  };
+  const search = (query: string, again = false, previous = false) => {
+    if (destroyed) return;
+    if (!query.trim()) {
+      closeSearch();
+      return;
+    }
+    findClosed = false;
+    eventBus.dispatch("find", {
+      source: eventBus,
+      type: again ? "again" : "",
+      query,
+      phraseSearch: true,
+      caseSensitive: false,
+      entireWord: false,
+      highlightAll: true,
+      findPrevious: previous,
+      matchDiacritics: false,
+    });
+  };
 
   return {
     viewer,
@@ -146,6 +227,8 @@ export function createDocumentViewer(container: HTMLDivElement, host: HTMLDivEle
     async goToDestination(destination: string | unknown[]) {
       if (!destroyed) await linkService.goToDestination(destination);
     },
+    search,
+    closeSearch,
     setSpread(mode: PdfSpread) {
       if (destroyed) return;
       spread = mode;
@@ -165,13 +248,17 @@ export function createDocumentViewer(container: HTMLDivElement, host: HTMLDivEle
     destroy() {
       if (destroyed) return;
       destroyed = true;
+      findClosed = true;
       cancelAnimationFrame(resizeFrame);
       observer.disconnect();
       const pages = Array.from({ length: viewer.pagesCount }, (_, index) => viewer.getPageView(index));
+      // Clear PDF.js's text highlights before resetting its find controller.
+      eventBus.dispatch("findbarclose", { source: eventBus });
       // setDocument(null) cancels rendering and removes the document listeners.
       viewer.setDocument(null);
       for (const page of pages) page.destroy();
       linkService.setDocument(null);
+      restoreGetPage();
       lifetime.abort(); // disconnects PDF.js's own ResizeObserver and scroll listener
       host.replaceChildren();
     },

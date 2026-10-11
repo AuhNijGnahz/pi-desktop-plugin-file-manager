@@ -24,9 +24,10 @@
   font-size: 11px;
   font-variant-numeric: tabular-nums;
 }
-.pdf-navigation, .pdf-zoom { display: flex; align-items: center; flex-wrap: wrap; gap: 4px; }
+.pdf-navigation, .pdf-zoom, .pdf-search { display: flex; align-items: center; flex-wrap: wrap; gap: 4px; }
 .pdf-navigation { min-width: 0; }
 .pdf-zoom { margin-left: auto; }
+.pdf-search { min-width: 0; }
 .pdf-toolbar button, .pdf-toolbar input, .pdf-toolbar select {
   min-height: 27px;
   border: 1px solid var(--border);
@@ -41,6 +42,9 @@
 .pdf-toolbar input { width: 54px; padding: 2px 4px; text-align: center; appearance: textfield; }
 .pdf-toolbar input::-webkit-inner-spin-button { appearance: none; }
 .pdf-toolbar select { max-width: 100%; padding: 2px 5px; }
+.pdf-search-controls { display: flex; min-width: 0; max-width: 100%; align-items: center; flex-wrap: wrap; gap: 4px; }
+.pdf-search-controls input { width: min(18ch, 28vw); min-width: 92px; flex: 1 1 92px; text-align: left; }
+.pdf-search-status { max-width: 14ch; color: var(--muted); overflow-wrap: anywhere; white-space: normal; }
 .pdf-page-count { min-width: 32px; padding: 0 2px; }
 .pdf-page-label { max-width: 90px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; color: var(--muted); }
 .pdf-zoom-value { min-width: 42px; text-align: center; }
@@ -113,6 +117,19 @@
 .pdf-document .textLayer .endOfContent { display: block; position: absolute; inset: 100% 0 0; z-index: 0; cursor: default; user-select: none; }
 .pdf-document .textLayer.selecting .endOfContent { top: 0; }
 .pdf-document .textLayer span[role="img"] { user-select: none; cursor: default; }
+.pdf-document .textLayer .highlight {
+  --highlight-bg-color: rgb(180 0 170 / 25%);
+  --highlight-selected-bg-color: rgb(0 100 0 / 25%);
+  margin: -1px;
+  padding: 1px;
+  border-radius: 4px;
+  background-color: var(--highlight-bg-color);
+}
+.pdf-document .textLayer .highlight.appended { position: initial; }
+.pdf-document .textLayer .highlight.begin { border-radius: 4px 0 0 4px; }
+.pdf-document .textLayer .highlight.end { border-radius: 0 4px 4px 0; }
+.pdf-document .textLayer .highlight.middle { border-radius: 0; }
+.pdf-document .textLayer .highlight.selected { background-color: var(--highlight-selected-bg-color); scroll-margin-top: 50px; }
 
 .pdf-sidebar-host { width: 224px; flex: 0 0 224px; min-height: 0; border-right: 1px solid var(--border); background: var(--bg); z-index: 3; }
 .pdf-sidebar { height: 100%; min-height: 0; display: flex; flex-direction: column; color: var(--secondary); font-size: 11px; }
@@ -153,4 +170,7 @@
 @container pdf-preview (max-width: 620px) {
   .pdf-sidebar-host { position: absolute; inset: 0 auto 0 0; width: min(260px, 85%); box-shadow: 8px 0 20px rgb(0 0 0 / 20%); }
   .pdf-toolbar { gap: 6px; }
+  .pdf-search { flex: 1 1 100%; }
+  .pdf-search-controls { flex: 1 1 auto; }
+  .pdf-search-controls input { width: min(28ch, 45vw); }
 }
