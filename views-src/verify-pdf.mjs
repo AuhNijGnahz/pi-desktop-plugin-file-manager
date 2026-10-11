@@ -1,4 +1,4 @@
-/** PDF read path and stable fit-width regression checks. Run with pnpm verify:pdf. */
+/** PDF read, fit-width and search checks. Run with pnpm verify:pdf. */
 import assert from "node:assert/strict";
 import { build } from "esbuild";
 import { mkdirSync, mkdtempSync, rmSync, symlinkSync, truncateSync, writeFileSync } from "node:fs";
@@ -23,6 +23,95 @@ try {
     bundle: true, platform: "node", format: "esm", outfile: fitModule, logLevel: "silent",
   });
   const { createPdfFitWidths } = await import(pathToFileURL(fitModule).href);
+  const searchModule = join(temporary, "pdf-search.mjs");
+  await build({
+    entryPoints: [join(dirname(fileURLToPath(import.meta.url)), "src", "lib", "pdfSearch.ts")],
+    bundle: true, platform: "node", format: "esm", outfile: searchModule, logLevel: "silent",
+  });
+  const { compilePdfRegex, findPdfRegexMatches } = await import(pathToFileURL(searchModule).href);
+  const regexMatches = (pattern, content, entireWord = false, caseSensitive = true) => {
+    const expression = compilePdfRegex(pattern, caseSensitive);
+    assert.ok(expression, `valid regex: ${pattern}`);
+    return findPdfRegexMatches(expression, content, entireWord);
+  };
+  for (const pattern of ["[", "(", "\\", "a{2,1}", "\\q", "a{２}", "[^ﬃ]", "[ﬀ-ﬄ]"]) assert.equal(compilePdfRegex(pattern), null, pattern);
+  for (const pattern of ["(?:)", "^|$", "\\b", "(?=alpha)", "(?<=alpha)", "z*"]) {
+    assert.deepEqual(regexMatches(pattern, "alpha 😀 beta"), [], pattern);
+  }
+  assert.deepEqual(regexMatches("alpha[\\s\\S]+beta", "alpha beta"), [{ index: 0, length: 10 }]);
+  assert.deepEqual(regexMatches("app", "apple app", true), [{ index: 6, length: 3 }]);
+  assert.deepEqual(regexMatches("COACH", "coach COACH", true, false), [{ index: 0, length: 5 }, { index: 6, length: 5 }]);
+  assert.deepEqual(regexMatches("COACH", "coach COACH", true), [{ index: 6, length: 5 }]);
+  assert.deepEqual(regexMatches("\\.(?:[A-Z]{2}|\\d+)", "x.AB x.42 x.A"), [{ index: 1, length: 3 }, { index: 6, length: 3 }]);
+  for (const pattern of ["é+", "[é]+", "\\u00e9+", "\\xE9+"]) {
+    assert.deepEqual(regexMatches(pattern, "e\u0301e\u0301 cafe"), [{ index: 0, length: 4 }], pattern);
+  }
+  assert.deepEqual(regexMatches("\\uFB03+", "ffiffi ffi"), [{ index: 0, length: 6 }, { index: 7, length: 3 }]);
+  assert.deepEqual(regexMatches("[ﬃf]+", "ffiffi f"), [{ index: 0, length: 6 }, { index: 7, length: 1 }]);
+  assert.deepEqual(regexMatches("[a-z]+", "Alpha 123"), [{ index: 1, length: 4 }]);
+  assert.deepEqual(regexMatches("[Ａ-Ｚ]+", "ABC xyz"), [{ index: 0, length: 3 }]);
+  assert.deepEqual(regexMatches("．＋", ".+ abc"), [{ index: 0, length: 2 }]);
+  assert.deepEqual(regexMatches("(?<pair>ab)\\k<pair>", "abab ab"), [{ index: 0, length: 4 }]);
+  assert.deepEqual(regexMatches("\\p{Letter}+", "中文 123"), [{ index: 0, length: 2 }]);
+  const reusable = compilePdfRegex("a");
+  assert.deepEqual(findPdfRegexMatches(reusable, "a"), findPdfRegexMatches(reusable, "a"));
+  console.log("ok   正则转义 / 字符类 / 量词 / 反向引用 / Unicode；零长度安全结束，大小写与全字可组合");
+
+  // Exercise the installed PDF.js public controller and its real normalize /
+  // getOriginalIndex pipeline with synthetic TextItems. Only module-evaluation
+  // DOM stubs are needed; this does not claim to test browser text highlights.
+  const previousDocument = globalThis.document;
+  const previousWindow = globalThis.window;
+  globalThis.document = { documentElement: { style: {} }, createElement: () => ({ style: {} }) };
+  globalThis.window = { requestAnimationFrame: (callback) => setTimeout(callback, 0) };
+  try {
+    const controllerModule = join(temporary, "pdf-find-controller.mjs");
+    const installed = createRequire(import.meta.url);
+    await build({
+      entryPoints: [join(dirname(fileURLToPath(import.meta.url)), "src", "lib", "pdfViewer.ts")],
+      bundle: true, platform: "node", format: "esm", outfile: controllerModule, logLevel: "silent",
+      plugins: [{ name: "installed-pdfjs", setup(builder) {
+        builder.onResolve({ filter: /^pdfjs-dist\// }, ({ path }) => ({ path: installed.resolve(path), external: true }));
+      } }],
+    });
+    const { PdfFindController } = await import(pathToFileURL(controllerModule).href);
+    const { EventBus, FindState } = await import("pdfjs-dist/legacy/web/pdf_viewer.mjs");
+    const eventBus = new EventBus();
+    const controller = new PdfFindController({ eventBus, linkService: { page: 1, pagesCount: 1 } });
+    controller.setDocument({ getPage: async () => ({ getTextContent: async () => ({ items: [
+      { str: "ﬃ ½ é co-", hasEOL: true }, { str: "ach 中文", hasEOL: true },
+    ] }) }) });
+    const find = async (query, options = { regex: true, caseSensitive: true, entireWord: false }) => {
+      assert.equal(controller.configure(query, options), true);
+      await new Promise((resolve, reject) => {
+        const timeout = setTimeout(() => { eventBus.off("updatefindcontrolstate", done); reject(new Error(`Find did not settle: ${query}`)); }, 2000);
+        const done = ({ state }) => {
+          if (state === FindState.PENDING) return;
+          clearTimeout(timeout); eventBus.off("updatefindcontrolstate", done); resolve();
+        };
+        eventBus.on("updatefindcontrolstate", done);
+        eventBus.dispatch("find", { type: "optionschange", query, highlightAll: true, matchDiacritics: false, findPrevious: false, ...options });
+      });
+      return controller.pageMatches[0].map((index, match) => ({ index, length: controller.pageMatchesLength[0][match] }));
+    };
+    for (const pattern of ["ﬃ", "ffi", "[ﬃ]"]) assert.deepEqual(await find(pattern), [{ index: 0, length: 1 }], pattern);
+    assert.deepEqual(await find("½"), [{ index: 2, length: 1 }]);
+    for (const pattern of ["é", "[é]", "\\u00e9"]) assert.deepEqual(await find(pattern), [{ index: 4, length: 1 }], pattern);
+    assert.deepEqual(await find("co[a-z]{3}"), [{ index: 6, length: 6 }]);
+    assert.deepEqual(await find("中文"), [{ index: 13, length: 2 }]);
+    assert.deepEqual(await find("COACH", { regex: false, caseSensitive: false, entireWord: true }), [{ index: 6, length: 6 }]);
+    assert.deepEqual(await find("COACH", { regex: true, caseSensitive: true, entireWord: true }), []);
+    assert.deepEqual(await find("(?:)"), []);
+    controller.clearPattern();
+    eventBus.dispatch("findbarclose", {});
+    await Promise.resolve();
+    assert.equal(controller.highlightMatches, false);
+    controller.setDocument(null);
+  } finally {
+    if (previousDocument === undefined) delete globalThis.document; else globalThis.document = previousDocument;
+    if (previousWindow === undefined) delete globalThis.window; else globalThis.window = previousWindow;
+  }
+  console.log("ok   匹配版本 PDF.js 的原始索引映射：连字 / 分数 / 重音 / 跨行断词；普通查找与正则切换正确");
   const modes = ["single", "double", "cover"];
   const widths = (geometry) => modes.map((mode) => geometry.width(mode));
   for (const count of [23, 24]) {

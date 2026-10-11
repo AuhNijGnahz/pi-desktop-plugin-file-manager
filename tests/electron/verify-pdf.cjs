@@ -73,7 +73,7 @@ function missingPagePdf() {
       URL.revokeObjectURL = (url) => { window.pdfTestResources.urls.delete(url); return revoke(url); };
     });
     const open = async (name) => page.getByRole('treeitem').filter({ hasText: name }).click();
-    const loaded = async (text) => page.locator('.textLayer').getByText(text, { exact: true }).first().waitFor({ timeout: 20000 });
+    const loaded = async (text) => page.locator('.textLayer').filter({ hasText: text }).first().waitFor({ timeout: 20000 });
     await open('sample.pdf');
     await loaded('PDF preview verification - page 1');
     await loaded('中文 PDF 阅读验证：学习与工作');
@@ -153,6 +153,82 @@ function missingPagePdf() {
       await page.getByText('No matches', { exact: true }).waitFor();
       await input.fill('');
       await page.waitForFunction(() => document.querySelectorAll('.textLayer .highlight').length === 0);
+      const caseButton = page.getByRole('button', { name: 'Match case', exact: true });
+      const wordButton = page.getByRole('button', { name: 'Match whole word', exact: true });
+      const regexButton = page.getByRole('button', { name: 'Use regular expression', exact: true });
+      const nextMatch = page.getByRole('button', { name: 'Next match', exact: true });
+      const previousMatch = page.getByRole('button', { name: 'Previous match', exact: true });
+      const matches = async (total) => page.waitForFunction((expected) => {
+        const status = document.querySelector('.pdf-search-status').textContent;
+        return /^\d+ \/ \d+$/.test(status) && status.endsWith(` / ${expected}`);
+      }, total);
+      const noMatches = async () => page.getByText('No matches', { exact: true }).waitFor();
+      for (const [button, title] of [[caseButton, 'Match case'], [wordButton, 'Match whole word'], [regexButton, 'Use regular expression']]) {
+        assert.equal(await button.getAttribute('aria-pressed'), 'false');
+        assert.equal(await button.getAttribute('title'), title);
+      }
+      await input.fill('STUDY'); await matches(3);
+      const optionDelay = await caseButton.evaluate((element) => new Promise((resolve, reject) => {
+        const status = document.querySelector('.pdf-search-status');
+        const started = performance.now();
+        const observer = new MutationObserver(() => {
+          if (status.textContent !== 'No matches') return;
+          observer.disconnect(); clearTimeout(timeout); resolve(performance.now() - started);
+        });
+        observer.observe(status, { childList: true, characterData: true, subtree: true });
+        const timeout = setTimeout(() => { observer.disconnect(); reject(new Error('PDF option change did not settle')); }, 5000);
+        element.click();
+      }));
+      assert(optionDelay < 180, `PDF option changes must bypass the 250ms typing delay: ${optionDelay}ms`);
+      assert.equal(await caseButton.getAttribute('aria-pressed'), 'true');
+      await caseButton.click(); await matches(3);
+      await input.fill('coac'); await matches(3);
+      await wordButton.click(); await noMatches();
+      await input.fill('coach'); await matches(3);
+      await regexButton.click(); await matches(3);
+      await caseButton.click();
+      await input.fill('[Cc]oach'); await matches(3);
+      for (const button of [caseButton, wordButton, regexButton]) assert.equal(await button.getAttribute('aria-pressed'), 'true');
+      await input.fill('COACH'); await noMatches();
+      await caseButton.click(); await matches(3);
+      await input.fill('co(?:ach)'); await matches(3);
+      await regexButton.click(); await noMatches();
+      await regexButton.click(); await matches(3);
+      assert.equal(await input.inputValue(), 'co(?:ach)');
+      await input.fill('[');
+      const invalid = page.getByRole('alert').filter({ hasText: 'Invalid or unsupported regular expression' });
+      await invalid.waitFor();
+      assert.equal(await input.getAttribute('aria-invalid'), 'true');
+      assert.equal(await input.getAttribute('aria-describedby'), await invalid.getAttribute('id'));
+      assert.equal(await nextMatch.isDisabled(), true);
+      assert.equal(await previousMatch.isDisabled(), true);
+      assert.equal(await page.locator('.pdf-search-status').innerText(), '');
+      await page.waitForFunction(() => document.querySelectorAll('.textLayer .highlight').length === 0);
+      await input.press('Enter'); await invalid.waitFor();
+      await regexButton.click(); await invalid.waitFor({ state: 'hidden' });
+      assert.equal(await input.getAttribute('aria-invalid'), 'false');
+      await regexButton.click(); await invalid.waitFor();
+      await input.fill('study\\s+coach'); await matches(3);
+      await invalid.waitFor({ state: 'hidden' });
+      assert.equal(await nextMatch.isDisabled(), false);
+      await page.locator('.textLayer .highlight.selected').first().waitFor();
+      const regexFirst = await page.locator('.pdf-search-status').innerText();
+      await input.press('Enter');
+      await page.waitForFunction((previous) => document.querySelector('.pdf-search-status').textContent !== previous, regexFirst);
+      await input.press('Shift+Enter');
+      await page.waitForFunction((expected) => document.querySelector('.pdf-search-status').textContent === expected, regexFirst);
+      for (const pattern of ['(?:)', '^|$', '(?=study)']) {
+        await input.fill(pattern); await noMatches();
+        assert.equal(await input.getAttribute('aria-invalid'), 'false');
+        assert.equal(await nextMatch.isDisabled(), true);
+        await page.waitForFunction(() => document.querySelectorAll('.textLayer .highlight').length === 0);
+      }
+      await input.fill('coach|$'); await matches(3);
+      await input.fill('['); await invalid.waitFor();
+      await input.fill(''); await invalid.waitFor({ state: 'hidden' });
+      await wordButton.click(); await regexButton.click();
+      for (const button of [caseButton, wordButton, regexButton]) assert.equal(await button.getAttribute('aria-pressed'), 'false');
+      results.push('Aa/whole-word/regex combinations, immediate option changes, accessible invalid-pattern clearing/recovery, regex navigation, zero-length termination');
       await input.fill('study coach');
       await page.locator('.textLayer .highlight').first().waitFor();
       await input.press('Escape');
@@ -163,13 +239,21 @@ function missingPagePdf() {
       await page.keyboard.press(process.platform === 'darwin' ? 'Meta+f' : 'Control+f');
       await input.waitFor();
       await input.fill('study coach');
+      for (const button of [caseButton, wordButton, regexButton]) await button.click();
       await page.getByRole('button', { name: 'Reload from disk', exact: true }).click();
       await input.waitFor({ state: 'hidden' });
       await loaded('PDF preview verification - page 1');
       await page.getByRole('button', { name: 'Search in PDF', exact: true }).click();
+      for (const button of [caseButton, wordButton, regexButton]) assert.equal(await button.getAttribute('aria-pressed'), 'false');
+      assert.equal(await input.inputValue(), '');
       await input.fill('study coach');
+      await regexButton.click(); await input.fill('['); await invalid.waitFor();
       await open('second.pdf'); await loaded('Second document: one page only');
       assert.equal(await input.count(), 0);
+      await page.getByRole('button', { name: 'Search in PDF', exact: true }).click();
+      for (const button of [caseButton, wordButton, regexButton]) assert.equal(await button.getAttribute('aria-pressed'), 'false');
+      assert.equal(await input.inputValue(), '');
+      await page.getByRole('button', { name: 'Close PDF search', exact: true }).click();
       results.push('PDF-scoped keyboard shortcut and document switch reset');
     }
     await open('git-changed.pdf'); await loaded('PDF preview verification - page 1');
@@ -227,9 +311,32 @@ function missingPagePdf() {
     await page.getByRole('button', { name: '下一页', exact: true }).waitFor();
     {
       await page.getByRole('button', { name: '在 PDF 中搜索', exact: true }).click();
-      await page.getByRole('searchbox', { name: '在 PDF 中搜索', exact: true }).fill('Second');
+      const input = page.getByRole('searchbox', { name: '在 PDF 中搜索', exact: true });
+      for (const name of ['区分大小写', '全字匹配', '使用正则表达式']) {
+        const button = page.getByRole('button', { name, exact: true });
+        assert.equal(await button.getAttribute('title'), name);
+        assert.equal(await button.getAttribute('aria-pressed'), 'false');
+        await button.click();
+        assert.equal(await button.getAttribute('aria-pressed'), 'true');
+      }
+      await input.fill('[Ss]econd');
       await page.locator('.textLayer .highlight').first().waitFor();
+      const fits = await page.locator('.pdf-toolbar').evaluate((toolbar) => {
+        const bounds = toolbar.getBoundingClientRect();
+        return toolbar.scrollWidth <= toolbar.clientWidth + 1 && Array.from(toolbar.querySelectorAll('.pdf-search input, .pdf-search button')).every((element) => {
+          const rect = element.getBoundingClientRect();
+          return rect.left >= bounds.left - 1 && rect.right <= bounds.right + 1;
+        });
+      });
+      assert.equal(fits, true, 'All PDF search controls must fit a narrow panel');
       await page.screenshot({ path: path.join(evidence, 'search-narrow.png') });
+      await input.fill('[');
+      await page.getByRole('alert').filter({ hasText: '正则表达式无效或不支持' }).waitFor();
+      assert.equal(await input.getAttribute('aria-invalid'), 'true');
+      assert.equal(await page.getByRole('button', { name: '下一个匹配', exact: true }).isDisabled(), true);
+      await input.press('Escape');
+      await input.waitFor({ state: 'hidden' });
+      await page.waitForFunction(() => document.querySelectorAll('.textLayer .highlight').length === 0);
     }
     await open('notes.txt');
     await page.locator('.cm-content').getByText('Text editing remains available.', { exact: true }).waitFor();

@@ -5,13 +5,14 @@ import { AnnotationEditorType, AnnotationMode, type PDFDocumentProxy, type PDFPa
 import { EventBus, FindState, PDFFindController, PDFLinkService, PDFViewer, RenderingStates, ScrollMode, SpreadMode } from "pdfjs-dist/legacy/web/pdf_viewer.mjs";
 import type { T } from "../i18n";
 import { createPdfFitWidths, type PdfSpread } from "./pdfFit";
+import { compilePdfRegex, DEFAULT_PDF_SEARCH_OPTIONS, findPdfRegexMatches, type PdfSearchOptions } from "./pdfSearch";
 
 export type { PdfSpread } from "./pdfFit";
 export const MIN_PDF_ZOOM = 0.1;
 export const MAX_PDF_ZOOM = 4;
 export const clampPdfZoom = (zoom: number) => Math.min(MAX_PDF_ZOOM, Math.max(MIN_PDF_ZOOM, zoom));
 
-export type PdfFindState = "PENDING" | "NOT_FOUND" | "FOUND" | "WRAPPED";
+export type PdfFindState = "PENDING" | "NOT_FOUND" | "FOUND" | "WRAPPED" | "INVALID";
 export type PdfFindCount = { current: number; total: number };
 export type PdfFindUpdate = { matchesCount: PdfFindCount; state: PdfFindState };
 
@@ -32,6 +33,33 @@ function findStateName(state: number): PdfFindState {
   return "FOUND";
 }
 
+/** Extend only PDF.js's public matcher; its normalization, original-index
+ * mapping, counts, navigation and text-layer highlighter remain in control. */
+export class PdfFindController extends PDFFindController {
+  private options = DEFAULT_PDF_SEARCH_OPTIONS;
+  private expression: RegExp | null = null;
+  private active = false;
+
+  configure(query: string, options: PdfSearchOptions) {
+    this.options = options;
+    this.expression = options.regex ? compilePdfRegex(query, options.caseSensitive) : null;
+    this.active = !options.regex || this.expression !== null;
+    return this.active;
+  }
+
+  clearPattern() {
+    this.options = DEFAULT_PDF_SEARCH_OPTIONS;
+    this.expression = null;
+    this.active = false;
+  }
+
+  override match(query: string | string[], pageContent: string, pageIndex: number) {
+    if (!this.active) return [];
+    if (!this.options.regex) return super.match(query, pageContent, pageIndex);
+    return this.expression ? findPdfRegexMatches(this.expression, pageContent, this.options.entireWord) : [];
+  }
+}
+
 /** A document-scoped PDFViewer, with no scripting, editing or remote l10n. */
 export function createDocumentViewer(container: HTMLDivElement, host: HTMLDivElement, pdf: PDFDocumentProxy, callbacks: Callbacks) {
   const lifetime = new AbortController();
@@ -44,6 +72,7 @@ export function createDocumentViewer(container: HTMLDivElement, host: HTMLDivEle
   let spread: PdfSpread = "single";
   let resizeFrame = 0;
   let findClosed = true;
+  let findSignature: string | null = null;
   let findCount: PdfFindCount = { current: 0, total: 0 };
   let findState: PdfFindState = "FOUND";
   const originalGetPage = pdf.getPage;
@@ -70,7 +99,7 @@ export function createDocumentViewer(container: HTMLDivElement, host: HTMLDivEle
     pause: () => {},
     resume: () => {},
   } as unknown as NonNullable<ConstructorParameters<typeof PDFViewer>[0]["l10n"]>;
-  const findController = new PDFFindController({ linkService, eventBus, updateMatchesCountOnProgress: true });
+  const findController = new PdfFindController({ linkService, eventBus, updateMatchesCountOnProgress: true });
   const reportFind = () => callbacks.find({ matchesCount: findCount, state: findState });
   eventBus.on("updatefindmatchescount", ({ matchesCount }: { matchesCount: PdfFindCount }) => {
     if (destroyed || findClosed) return;
@@ -190,25 +219,36 @@ export function createDocumentViewer(container: HTMLDivElement, host: HTMLDivEle
   const closeSearch = () => {
     if (destroyed) return;
     findClosed = true;
+    findSignature = null;
+    findController.clearPattern();
     eventBus.dispatch("findbarclose", { source: eventBus });
     findCount = { current: 0, total: 0 };
     findState = "FOUND";
     callbacks.find({ matchesCount: findCount, state: findState });
   };
-  const search = (query: string, again = false, previous = false) => {
+  const search = (query: string, again = false, previous = false, options = DEFAULT_PDF_SEARCH_OPTIONS, immediate = false) => {
     if (destroyed) return;
     if (!query.trim()) {
       closeSearch();
       return;
     }
+    if (!findController.configure(query, options)) {
+      closeSearch();
+      findState = "INVALID";
+      reportFind();
+      return;
+    }
+    const signature = JSON.stringify([query, options.caseSensitive, options.entireWord, options.regex]);
+    const changed = signature !== findSignature;
+    findSignature = signature;
     findClosed = false;
     eventBus.dispatch("find", {
       source: eventBus,
-      type: again ? "again" : "",
+      type: immediate || (again && changed) ? "optionschange" : again ? "again" : "",
       query,
       phraseSearch: true,
-      caseSensitive: false,
-      entireWord: false,
+      caseSensitive: options.caseSensitive,
+      entireWord: options.entireWord,
       highlightAll: true,
       findPrevious: previous,
       matchDiacritics: false,
@@ -249,6 +289,7 @@ export function createDocumentViewer(container: HTMLDivElement, host: HTMLDivEle
       if (destroyed) return;
       destroyed = true;
       findClosed = true;
+      findController.clearPattern();
       cancelAnimationFrame(resizeFrame);
       observer.disconnect();
       const pages = Array.from({ length: viewer.pagesCount }, (_, index) => viewer.getPageView(index));

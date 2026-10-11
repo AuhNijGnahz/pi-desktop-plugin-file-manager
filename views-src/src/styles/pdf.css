@@ -27,7 +27,7 @@
 .pdf-navigation, .pdf-zoom, .pdf-search { display: flex; align-items: center; flex-wrap: wrap; gap: 4px; }
 .pdf-navigation { min-width: 0; }
 .pdf-zoom { margin-left: auto; }
-.pdf-search { min-width: 0; }
+.pdf-search { min-width: 0; max-width: 100%; }
 .pdf-toolbar button, .pdf-toolbar input, .pdf-toolbar select {
   min-height: 27px;
   border: 1px solid var(--border);
@@ -47,6 +47,11 @@
 .pdf-search-toggle svg { display: block; width: 1.5em; height: 1.5em; min-width: 16px; min-height: 16px; }
 .pdf-search-controls input { width: min(18ch, 28vw); min-width: 92px; flex: 1 1 92px; text-align: left; }
 .pdf-search-status { max-width: 14ch; color: var(--muted); overflow-wrap: anywhere; white-space: normal; }
+.pdf-search-options { display: flex; flex: 0 0 auto; align-items: center; gap: 3px; }
+.pdf-search-options button { font-family: monospace; font-weight: 600; }
+.pdf-search-whole-word { text-decoration: underline; text-underline-offset: 3px; }
+.pdf-search-error { flex: 1 0 100%; min-width: 0; color: var(--danger); overflow-wrap: anywhere; }
+.pdf-toolbar input[aria-invalid="true"] { border-color: var(--danger); }
 .pdf-page-count { min-width: 32px; padding: 0 2px; }
 .pdf-page-label { max-width: 90px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; color: var(--muted); }
 .pdf-zoom-value { min-width: 42px; text-align: center; }
@@ -173,6 +178,6 @@
   .pdf-sidebar-host { position: absolute; inset: 0 auto 0 0; width: min(260px, 85%); box-shadow: 8px 0 20px rgb(0 0 0 / 20%); }
   .pdf-toolbar { gap: 6px; }
   .pdf-search { flex: 1 1 100%; }
-  .pdf-search-controls { flex: 1 1 auto; }
+  .pdf-search-controls { flex: 1 1 0; }
   .pdf-search-controls input { width: min(28ch, 45vw); }
 }

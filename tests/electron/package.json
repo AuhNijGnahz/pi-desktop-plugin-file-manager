@@ -1,6 +1,6 @@
 {
   "name": "file-manager-pdf-browser-checks",
   "private": true,
-  "scripts": { "verify": "node verify-pdf.cjs" },
+  "scripts": { "verify": "node verify-pdf.cjs", "verify:alignment": "node verify-pdf-alignment.cjs" },
   "devDependencies": { "electron": "43.6.0", "playwright": "1.62.1" }
 }

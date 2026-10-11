@@ -1,6 +1,7 @@
 import { defineConfig, Plugin } from "vite";
 import react from "@vitejs/plugin-react";
 import { pdfAssetsPlugin } from "./pdf-assets-plugin";
+import { pdfTextLayerPlugin } from "./pdf-text-layer-plugin";
 
 /**
  * 构建产物输出到插件实际加载的 ../views 目录。
@@ -30,7 +31,7 @@ function fileProtocolCompat(): Plugin {
 
 export default defineConfig({
   base: "./",
-  plugins: [react(), pdfAssetsPlugin(), fileProtocolCompat()],
+  plugins: [react(), pdfAssetsPlugin(), pdfTextLayerPlugin(), fileProtocolCompat()],
   // Keep third-party whitespace strings escaped in checked-in JavaScript.
   esbuild: { supported: { "template-literal": false } },
   build: {

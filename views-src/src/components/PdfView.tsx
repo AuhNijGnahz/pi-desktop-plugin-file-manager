@@ -1,8 +1,9 @@
-import { useCallback, useEffect, useRef, useState } from "react";
+import { useCallback, useEffect, useId, useRef, useState } from "react";
 import type { PDFDocumentProxy, PDFPageProxy } from "pdfjs-dist/legacy/build/pdf.mjs";
 import type { T } from "../i18n";
 import { createPdfSession } from "../lib/pdf";
 import { clampPdfZoom, createDocumentViewer, MAX_PDF_ZOOM, MIN_PDF_ZOOM, type DocumentViewer, type PdfFindState, type PdfSpread } from "../lib/pdfViewer";
+import { DEFAULT_PDF_SEARCH_OPTIONS, type PdfSearchOptions } from "../lib/pdfSearch";
 import { PdfSidebar, type PdfSidebarTab } from "./PdfSidebar";
 import "../styles/pdf.css";
 
@@ -25,6 +26,8 @@ export function PdfView({ src, name, size, locale, t }: Props) {
   const [labels, setLabels] = useState<string[] | null>(null);
   const [searchOpen, setSearchOpen] = useState(false);
   const [searchQuery, setSearchQuery] = useState("");
+  const [searchOptions, setSearchOptions] = useState<PdfSearchOptions>(DEFAULT_PDF_SEARCH_OPTIONS);
+  const searchErrorId = useId();
   const [searchCount, setSearchCount] = useState({ current: 0, total: 0 });
   const [searchState, setSearchState] = useState<PdfFindState | null>(null);
   const bodyRef = useRef<HTMLDivElement>(null);
@@ -53,6 +56,7 @@ export function PdfView({ src, name, size, locale, t }: Props) {
     setLabels(null);
     setSearchOpen(false);
     setSearchQuery("");
+    setSearchOptions(DEFAULT_PDF_SEARCH_OPTIONS);
     setSearchCount({ current: 0, total: 0 });
     setSearchState(null);
     const fail = (cause?: { name?: string }) => {
@@ -64,6 +68,7 @@ export function PdfView({ src, name, size, locale, t }: Props) {
       setRendering(false);
       setSearchOpen(false);
       setSearchQuery("");
+      setSearchOptions(DEFAULT_PDF_SEARCH_OPTIONS);
       setSearchCount({ current: 0, total: 0 });
       setSearchState(null);
       controller?.destroy();
@@ -168,13 +173,20 @@ export function PdfView({ src, name, size, locale, t }: Props) {
       }
     }
   };
-  const search = (again = false, previous = false, query = searchQuery) => {
+  const search = (again = false, previous = false, query = searchQuery, options = searchOptions, immediate = false) => {
     if (!query.trim()) {
       clearSearch();
       return;
     }
-    controllerRef.current?.search(query, again, previous);
+    controllerRef.current?.search(query, again, previous, options, immediate);
   };
+  const toggleSearchOption = (option: keyof PdfSearchOptions) => {
+    const options = { ...searchOptions, [option]: !searchOptions[option] };
+    setSearchOptions(options);
+    search(false, false, searchQuery, options, true);
+  };
+  const invalidSearch = searchState === "INVALID";
+  const searchNavigationDisabled = disabled || !searchQuery.trim() || invalidSearch || searchState === "NOT_FOUND";
   const searchStatus = searchState === "PENDING"
     ? `${t("pdfSearchSearching")}${searchCount.total > 0 ? ` ${t("pdfSearchCount", searchCount)}` : ""}`
     : searchState === "NOT_FOUND"
@@ -213,6 +225,7 @@ export function PdfView({ src, name, size, locale, t }: Props) {
           </button>
           {searchOpen ? <div className="pdf-search-controls">
             <input ref={searchInputRef} type="search" value={searchQuery} aria-label={t("pdfSearch")} placeholder={t("pdfSearchPlaceholder")} disabled={disabled}
+              aria-invalid={invalidSearch} aria-describedby={invalidSearch ? searchErrorId : undefined}
               onChange={(event) => {
                 const query = event.target.value;
                 setSearchQuery(query);
@@ -229,12 +242,21 @@ export function PdfView({ src, name, size, locale, t }: Props) {
                   closeSearch();
                 }
               }} />
+            <div className="pdf-search-options">
+              <button type="button" aria-label={t("pdfSearchCaseSensitive")} title={t("pdfSearchCaseSensitive")} aria-pressed={searchOptions.caseSensitive} disabled={disabled}
+                onClick={() => toggleSearchOption("caseSensitive")}>Aa</button>
+              <button className="pdf-search-whole-word" type="button" aria-label={t("pdfSearchWholeWord")} title={t("pdfSearchWholeWord")} aria-pressed={searchOptions.entireWord} disabled={disabled}
+                onClick={() => toggleSearchOption("entireWord")}>ab</button>
+              <button type="button" aria-label={t("pdfSearchRegex")} title={t("pdfSearchRegex")} aria-pressed={searchOptions.regex} disabled={disabled}
+                onClick={() => toggleSearchOption("regex")}>.*</button>
+            </div>
             <span className="pdf-search-status" role="status" aria-live="polite">{searchStatus}</span>
-            <button type="button" aria-label={t("pdfSearchPrevious")} title={t("pdfSearchPrevious")} disabled={disabled || !searchQuery.trim()}
+            <button type="button" aria-label={t("pdfSearchPrevious")} title={t("pdfSearchPrevious")} disabled={searchNavigationDisabled}
               onClick={() => search(true, true)}>↑</button>
-            <button type="button" aria-label={t("pdfSearchNext")} title={t("pdfSearchNext")} disabled={disabled || !searchQuery.trim()}
+            <button type="button" aria-label={t("pdfSearchNext")} title={t("pdfSearchNext")} disabled={searchNavigationDisabled}
               onClick={() => search(true)}>↓</button>
             <button type="button" aria-label={t("pdfSearchClose")} title={t("pdfSearchClose")} disabled={disabled} onClick={closeSearch}>×</button>
+            {invalidSearch ? <span id={searchErrorId} className="pdf-search-error" role="alert">{t("pdfSearchInvalidRegex")}</span> : null}
           </div> : null}
         </div>
         <div className="pdf-zoom">
