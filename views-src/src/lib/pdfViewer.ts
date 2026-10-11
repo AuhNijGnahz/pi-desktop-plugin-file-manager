@@ -70,7 +70,7 @@ export function createDocumentViewer(container: HTMLDivElement, host: HTMLDivEle
     pause: () => {},
     resume: () => {},
   } as unknown as NonNullable<ConstructorParameters<typeof PDFViewer>[0]["l10n"]>;
-  const findController = new PDFFindController({ linkService, eventBus, delay: 0, updateMatchesCountOnProgress: true });
+  const findController = new PDFFindController({ linkService, eventBus, updateMatchesCountOnProgress: true });
   const reportFind = () => callbacks.find({ matchesCount: findCount, state: findState });
   eventBus.on("updatefindmatchescount", ({ matchesCount }: { matchesCount: PdfFindCount }) => {
     if (destroyed || findClosed) return;

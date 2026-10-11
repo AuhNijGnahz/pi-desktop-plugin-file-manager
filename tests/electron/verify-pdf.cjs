@@ -112,6 +112,15 @@ function missingPagePdf() {
       await page.locator('.pdf-search-status').getByText(/\/ 3/).waitFor();
       await page.locator('.textLayer .highlight').first().waitFor();
       const first = await page.locator('.pdf-search-status').innerText();
+      const imeDefaultHandling = await input.evaluate((element) => [
+        { key: 'Enter', isComposing: true },
+        { key: 'Escape', isComposing: true },
+        { key: 'Enter', keyCode: 229 },
+        { key: 'Escape', keyCode: 229 },
+      ].map((options) => element.dispatchEvent(new KeyboardEvent('keydown', { bubbles: true, cancelable: true, ...options }))));
+      assert.deepEqual(imeDefaultHandling, [true, true, true, true], 'IME candidate keys must keep their default behavior');
+      assert.equal(await input.inputValue(), 'study coach');
+      assert.equal(await page.locator('.pdf-search-status').innerText(), first);
       await input.press('Enter');
       await page.waitForFunction((previous) => document.querySelector('.pdf-search-status').textContent !== previous, first);
       await input.press('Shift+Enter');
@@ -123,7 +132,24 @@ function missingPagePdf() {
       await input.fill('中文');
       await page.locator('.pdf-search-status').getByText(/\/ 3/).waitFor();
       await page.locator('.textLayer .highlight').first().waitFor();
-      await input.fill('a-word-that-does-not-exist');
+      const searchDelay = await input.evaluate((element) => new Promise((resolve, reject) => {
+        const status = document.querySelector('.pdf-search-status');
+        const started = performance.now();
+        const observer = new MutationObserver(() => {
+          if (status.textContent !== 'No matches') return;
+          observer.disconnect();
+          clearTimeout(timeout);
+          resolve(performance.now() - started);
+        });
+        observer.observe(status, { childList: true, characterData: true, subtree: true });
+        const timeout = setTimeout(() => {
+          observer.disconnect();
+          reject(new Error('Typed PDF search did not settle'));
+        }, 5000);
+        Object.getOwnPropertyDescriptor(HTMLInputElement.prototype, 'value').set.call(element, 'a-word-that-does-not-exist');
+        element.dispatchEvent(new Event('input', { bubbles: true }));
+      }));
+      assert(searchDelay >= 180, `Typed search must coalesce input before computing matches: ${searchDelay}ms`);
       await page.getByText('No matches', { exact: true }).waitFor();
       await input.fill('');
       await page.waitForFunction(() => document.querySelectorAll('.textLayer .highlight').length === 0);
@@ -132,7 +158,7 @@ function missingPagePdf() {
       await input.press('Escape');
       await input.waitFor({ state: 'hidden' });
       await page.waitForFunction(() => document.querySelectorAll('.textLayer .highlight').length === 0);
-      results.push('English/Chinese cross-page search, count, Enter/Shift+Enter, no match, empty query and Escape clear highlights');
+      results.push('English/Chinese cross-page search, count, IME-safe keys, typing debounce, Enter/Shift+Enter, no match, empty query and Escape clear highlights');
       await page.locator('.pdf-scroll').focus();
       await page.keyboard.press(process.platform === 'darwin' ? 'Meta+f' : 'Control+f');
       await input.waitFor();

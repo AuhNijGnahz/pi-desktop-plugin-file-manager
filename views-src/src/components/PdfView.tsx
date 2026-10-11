@@ -153,6 +153,7 @@ export function PdfView({ src, name, size, locale, t }: Props) {
     return Boolean(element && (element.isContentEditable || ["INPUT", "TEXTAREA", "SELECT"].includes(element.tagName)));
   };
   const handleStageKeyDown = (event: React.KeyboardEvent<HTMLDivElement>) => {
+    if (event.nativeEvent.isComposing || event.nativeEvent.keyCode === 229) return;
     if ((event.metaKey || event.ctrlKey) && event.key.toLowerCase() === "f" && !isTextInput(event.target)) {
       event.preventDefault();
       openSearch();
@@ -213,6 +214,7 @@ export function PdfView({ src, name, size, locale, t }: Props) {
                 search(false, false, query);
               }}
               onKeyDown={(event) => {
+                if (event.nativeEvent.isComposing || event.nativeEvent.keyCode === 229) return;
                 if (event.key === "Enter") {
                   event.preventDefault();
                   search(true, event.shiftKey);
