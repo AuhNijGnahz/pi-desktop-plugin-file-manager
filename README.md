@@ -61,6 +61,12 @@ PDF 使用 `pdfjs-dist` 的兼容构建与 `PDFViewer` 多页组件，并由 `pd
 
 `main.js` 是手写、零依赖的 CommonJS，插件的依赖不会被安装，所以不要往它里面 `require` 第三方包。
 
+### 打包
+
+完成构建与桌面检查后，在仓库根目录运行 `node scripts/prepare-package.mjs`。脚本生成 `dist/runtime`，只复制 `manifest.json`、`main.js`、生产 `views/`（含第三方许可）、README 与 CHANGELOG；源码、测试夹具、QA 脚本和依赖均不进入运行包。
+
+再对 **`dist/runtime`** 使用 PI-Desktop 官方 `PluginCheck` 和 `PluginPack`。开发加载仍可选择仓库根目录；正式安装包使用准备好的运行目录，避免将整个测试目录打进包内。
+
 ### 校验
 
 ```bash
