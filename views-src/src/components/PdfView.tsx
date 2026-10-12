@@ -185,7 +185,8 @@ export function PdfView({ src, name, size, locale, t }: Props) {
     setSearchOptions(options);
     search(false, false, searchQuery, options, true);
   };
-  const invalidSearch = searchState === "INVALID";
+  const searchErrorKey = searchState === "INVALID" ? "pdfSearchInvalidRegex" : searchState === "TIMEOUT" ? "pdfSearchRegexTimeout" : searchState === "LIMIT" ? "pdfSearchRegexLimit" : null;
+  const invalidSearch = searchErrorKey !== null;
   const searchNavigationDisabled = disabled || !searchQuery.trim() || invalidSearch || searchState === "NOT_FOUND";
   const searchStatus = searchState === "PENDING"
     ? `${t("pdfSearchSearching")}${searchCount.total > 0 ? ` ${t("pdfSearchCount", searchCount)}` : ""}`
@@ -243,12 +244,12 @@ export function PdfView({ src, name, size, locale, t }: Props) {
                 }
               }} />
             <div className="pdf-search-options">
-              <button type="button" aria-label={t("pdfSearchCaseSensitive")} title={t("pdfSearchCaseSensitive")} aria-pressed={searchOptions.caseSensitive} disabled={disabled}
-                onClick={() => toggleSearchOption("caseSensitive")}>Aa</button>
-              <button className="pdf-search-whole-word" type="button" aria-label={t("pdfSearchWholeWord")} title={t("pdfSearchWholeWord")} aria-pressed={searchOptions.entireWord} disabled={disabled}
-                onClick={() => toggleSearchOption("entireWord")}>ab</button>
-              <button type="button" aria-label={t("pdfSearchRegex")} title={t("pdfSearchRegex")} aria-pressed={searchOptions.regex} disabled={disabled}
-                onClick={() => toggleSearchOption("regex")}>.*</button>
+              <PdfSearchOption label={t("pdfSearchCaseSensitive")} text="Aa" pressed={searchOptions.caseSensitive} disabled={disabled}
+                onToggle={() => toggleSearchOption("caseSensitive")} />
+              <PdfSearchOption label={t("pdfSearchWholeWord")} text="ab" pressed={searchOptions.entireWord} disabled={disabled} wholeWord
+                onToggle={() => toggleSearchOption("entireWord")} />
+              <PdfSearchOption label={t("pdfSearchRegex")} text=".*" pressed={searchOptions.regex} disabled={disabled}
+                onToggle={() => toggleSearchOption("regex")} />
             </div>
             <span className="pdf-search-status" role="status" aria-live="polite">{searchStatus}</span>
             <button type="button" aria-label={t("pdfSearchPrevious")} title={t("pdfSearchPrevious")} disabled={searchNavigationDisabled}
@@ -256,7 +257,7 @@ export function PdfView({ src, name, size, locale, t }: Props) {
             <button type="button" aria-label={t("pdfSearchNext")} title={t("pdfSearchNext")} disabled={searchNavigationDisabled}
               onClick={() => search(true)}>↓</button>
             <button type="button" aria-label={t("pdfSearchClose")} title={t("pdfSearchClose")} disabled={disabled} onClick={closeSearch}>×</button>
-            {invalidSearch ? <span id={searchErrorId} className="pdf-search-error" role="alert">{t("pdfSearchInvalidRegex")}</span> : null}
+            {searchErrorKey ? <span id={searchErrorId} className="pdf-search-error" role="alert">{t(searchErrorKey)}</span> : null}
           </div> : null}
         </div>
         <div className="pdf-zoom">
@@ -285,5 +286,18 @@ export function PdfView({ src, name, size, locale, t }: Props) {
         </div>
       </div>
     </div>
+  );
+}
+
+function PdfSearchOption({ label, text, pressed, disabled, wholeWord, onToggle }: {
+  label: string; text: string; pressed: boolean; disabled: boolean; wholeWord?: boolean; onToggle: () => void;
+}) {
+  const tooltipId = useId();
+  return (
+    <span className="pdf-search-option">
+      <button type="button" className={wholeWord ? "pdf-search-whole-word" : undefined} aria-label={label}
+        aria-describedby={tooltipId} aria-pressed={pressed} disabled={disabled} onClick={onToggle}>{text}</button>
+      <span id={tooltipId} className="pdf-search-option-tooltip" role="tooltip">{label}</span>
+    </span>
   );
 }

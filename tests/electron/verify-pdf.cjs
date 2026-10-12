@@ -165,7 +165,7 @@ function missingPagePdf() {
       const noMatches = async () => page.getByText('No matches', { exact: true }).waitFor();
       for (const [button, title] of [[caseButton, 'Match case'], [wordButton, 'Match whole word'], [regexButton, 'Use regular expression']]) {
         assert.equal(await button.getAttribute('aria-pressed'), 'false');
-        assert.equal(await button.getAttribute('title'), title);
+        assert.equal(await button.evaluate((element) => document.getElementById(element.getAttribute('aria-describedby'))?.textContent), title);
       }
       await input.fill('STUDY'); await matches(3);
       const optionDelay = await caseButton.evaluate((element) => new Promise((resolve, reject) => {
@@ -314,7 +314,7 @@ function missingPagePdf() {
       const input = page.getByRole('searchbox', { name: '在 PDF 中搜索', exact: true });
       for (const name of ['区分大小写', '全字匹配', '使用正则表达式']) {
         const button = page.getByRole('button', { name, exact: true });
-        assert.equal(await button.getAttribute('title'), name);
+        assert.equal(await button.evaluate((element) => document.getElementById(element.getAttribute('aria-describedby'))?.textContent), name);
         assert.equal(await button.getAttribute('aria-pressed'), 'false');
         await button.click();
         assert.equal(await button.getAttribute('aria-pressed'), 'true');

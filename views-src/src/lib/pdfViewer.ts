@@ -5,14 +5,16 @@ import { AnnotationEditorType, AnnotationMode, type PDFDocumentProxy, type PDFPa
 import { EventBus, FindState, PDFFindController, PDFLinkService, PDFViewer, RenderingStates, ScrollMode, SpreadMode } from "pdfjs-dist/legacy/web/pdf_viewer.mjs";
 import type { T } from "../i18n";
 import { createPdfFitWidths, type PdfSpread } from "./pdfFit";
-import { compilePdfRegex, DEFAULT_PDF_SEARCH_OPTIONS, findPdfRegexMatches, type PdfSearchOptions } from "./pdfSearch";
+import { compilePdfRegex, DEFAULT_PDF_SEARCH_OPTIONS, type PdfSearchMatch, type PdfSearchOptions } from "./pdfSearch";
+import { createPdfRegexMatcher, type PdfRegexFailure } from "./pdfRegex";
+import { createPdfNavigation } from "./pdfNavigation";
 
 export type { PdfSpread } from "./pdfFit";
 export const MIN_PDF_ZOOM = 0.1;
 export const MAX_PDF_ZOOM = 4;
 export const clampPdfZoom = (zoom: number) => Math.min(MAX_PDF_ZOOM, Math.max(MIN_PDF_ZOOM, zoom));
 
-export type PdfFindState = "PENDING" | "NOT_FOUND" | "FOUND" | "WRAPPED" | "INVALID";
+export type PdfFindState = "PENDING" | "NOT_FOUND" | "FOUND" | "WRAPPED" | "INVALID" | "TIMEOUT" | "LIMIT";
 export type PdfFindCount = { current: number; total: number };
 export type PdfFindUpdate = { matchesCount: PdfFindCount; state: PdfFindState };
 
@@ -33,21 +35,45 @@ function findStateName(state: number): PdfFindState {
   return "FOUND";
 }
 
-/** Extend only PDF.js's public matcher; its normalization, original-index
- * mapping, counts, navigation and text-layer highlighter remain in control. */
-export class PdfFindController extends PDFFindController {
+// The pinned build adapter awaits match(). Its published types still describe
+// a synchronous matcher; keep the expanded type at this one API boundary.
+type AsyncPdfFind = Omit<PDFFindController, "match"> & {
+  match(query: string | string[], content: string, index: number): PdfSearchMatch[] | Promise<PdfSearchMatch[]>;
+};
+const AsyncFindBase = PDFFindController as unknown as new (options: ConstructorParameters<typeof PDFFindController>[0]) => AsyncPdfFind;
+
+export class PdfFindController extends AsyncFindBase {
   private options = DEFAULT_PDF_SEARCH_OPTIONS;
   private expression: RegExp | null = null;
   private active = false;
+  private signature: string | null = null;
+  private matcher: ReturnType<typeof createPdfRegexMatcher>;
+  matchGeneration = 0;
+
+  constructor(options: ConstructorParameters<typeof PDFFindController>[0], failed: (failure: PdfRegexFailure) => void = () => {}) {
+    super(options);
+    this.matcher = createPdfRegexMatcher(failed);
+  }
+
+  cancelPendingMatches() { this.matcher.cancel(); }
 
   configure(query: string, options: PdfSearchOptions) {
-    this.options = options;
-    this.expression = options.regex ? compilePdfRegex(query, options.caseSensitive) : null;
-    this.active = !options.regex || this.expression !== null;
+    const signature = JSON.stringify([query, options.caseSensitive, options.entireWord, options.regex]);
+    if (signature !== this.signature) {
+      this.matchGeneration++;
+      this.matcher.cancel();
+      this.signature = signature;
+      this.options = options;
+      this.expression = options.regex ? compilePdfRegex(query, options.caseSensitive) : null;
+      this.active = !options.regex || this.expression !== null;
+    }
     return this.active;
   }
 
   clearPattern() {
+    this.matchGeneration++;
+    this.matcher.cancel();
+    this.signature = null;
     this.options = DEFAULT_PDF_SEARCH_OPTIONS;
     this.expression = null;
     this.active = false;
@@ -55,8 +81,8 @@ export class PdfFindController extends PDFFindController {
 
   override match(query: string | string[], pageContent: string, pageIndex: number) {
     if (!this.active) return [];
-    if (!this.options.regex) return super.match(query, pageContent, pageIndex);
-    return this.expression ? findPdfRegexMatches(this.expression, pageContent, this.options.entireWord) : [];
+    if (!this.options.regex) return super.match(query, pageContent, pageIndex) ?? [];
+    return this.expression ? this.matcher.match(this.expression, pageContent, this.options.entireWord) : [];
   }
 }
 
@@ -99,7 +125,12 @@ export function createDocumentViewer(container: HTMLDivElement, host: HTMLDivEle
     pause: () => {},
     resume: () => {},
   } as unknown as NonNullable<ConstructorParameters<typeof PDFViewer>[0]["l10n"]>;
-  const findController = new PdfFindController({ linkService, eventBus, updateMatchesCountOnProgress: true });
+  const findController = new PdfFindController({ linkService, eventBus, updateMatchesCountOnProgress: true }, (failure) => {
+    if (destroyed) return;
+    closeSearch();
+    findState = failure;
+    reportFind();
+  });
   const reportFind = () => callbacks.find({ matchesCount: findCount, state: findState });
   eventBus.on("updatefindmatchescount", ({ matchesCount }: { matchesCount: PdfFindCount }) => {
     if (destroyed || findClosed) return;
@@ -114,7 +145,7 @@ export function createDocumentViewer(container: HTMLDivElement, host: HTMLDivEle
   }, { signal: lifetime.signal });
   const options: ConstructorParameters<typeof PDFViewer>[0] & { abortSignal: AbortSignal } = {
     container, viewer: host, eventBus, linkService, l10n,
-    findController,
+    findController: findController as unknown as PDFFindController,
     abortSignal: lifetime.signal,
     annotationMode: AnnotationMode.DISABLE,
     annotationEditorMode: AnnotationEditorType.DISABLE,
@@ -207,9 +238,13 @@ export function createDocumentViewer(container: HTMLDivElement, host: HTMLDivEle
     if (error) callbacks.failed();
     else if (pageNumber === viewer.currentPageNumber) callbacks.rendering(false);
   }, { signal: lifetime.signal });
+  const navigation = createPdfNavigation(pdf, viewer, eventBus, lifetime.signal);
   try {
     viewer.setDocument(pdf);
   } catch (error) {
+    navigation.cancel();
+    observer.disconnect();
+    cancelAnimationFrame(resizeFrame);
     restoreGetPage();
     lifetime.abort();
     throw error;
@@ -263,9 +298,13 @@ export function createDocumentViewer(container: HTMLDivElement, host: HTMLDivEle
       if (rememberPage(pageNumber, pdfPage)) resize();
       eventBus.dispatch("thumbnailrendered", { source: viewer, pageNumber, pdfPage });
     },
-    goToPage(number: number) { if (!destroyed) viewer.currentPageNumber = Math.max(1, Math.min(pdf.numPages, number)); },
+    goToPage(number: number) {
+      if (destroyed) return;
+      navigation.cancel();
+      viewer.currentPageNumber = Math.max(1, Math.min(pdf.numPages, number));
+    },
     async goToDestination(destination: string | unknown[]) {
-      if (!destroyed) await linkService.goToDestination(destination);
+      if (!destroyed) await navigation.goToDestination(destination);
     },
     search,
     closeSearch,
@@ -288,6 +327,7 @@ export function createDocumentViewer(container: HTMLDivElement, host: HTMLDivEle
     destroy() {
       if (destroyed) return;
       destroyed = true;
+      navigation.cancel();
       findClosed = true;
       findController.clearPattern();
       cancelAnimationFrame(resizeFrame);

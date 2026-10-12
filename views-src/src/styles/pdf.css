@@ -12,6 +12,8 @@
   container: pdf-preview / inline-size;
 }
 .pdf-toolbar {
+  position: relative;
+  z-index: 4;
   display: flex;
   flex: 0 0 auto;
   flex-wrap: wrap;
@@ -49,6 +51,29 @@
 .pdf-search-status { max-width: 14ch; color: var(--muted); overflow-wrap: anywhere; white-space: normal; }
 .pdf-search-options { display: flex; flex: 0 0 auto; align-items: center; gap: 3px; }
 .pdf-search-options button { font-family: monospace; font-weight: 600; }
+.pdf-search-option { position: relative; display: inline-flex; }
+.pdf-search-option-tooltip {
+  display: none;
+  position: absolute;
+  top: calc(100% + 6px);
+  left: 50%;
+  transform: translateX(-50%);
+  width: max-content;
+  max-width: min(24ch, calc(100cqw - 20px));
+  padding: 5px 8px;
+  border: 1px solid var(--border);
+  border-radius: 5px;
+  background: var(--surface);
+  color: var(--fg);
+  font-size: 11px;
+  line-height: 1.4;
+  text-align: center;
+  white-space: normal;
+  pointer-events: none;
+  box-shadow: 0 2px 8px rgb(0 0 0 / 20%);
+}
+.pdf-search-option:hover > .pdf-search-option-tooltip,
+.pdf-search-option:has(button:focus-visible) > .pdf-search-option-tooltip { display: block; }
 .pdf-search-whole-word { text-decoration: underline; text-underline-offset: 3px; }
 .pdf-search-error { flex: 1 0 100%; min-width: 0; color: var(--danger); overflow-wrap: anywhere; }
 .pdf-toolbar input[aria-invalid="true"] { border-color: var(--danger); }

@@ -197,7 +197,7 @@ function regexPage(content: string): RegexPage {
   return { text, starts, ends };
 }
 
-export function findPdfRegexMatches(expression: RegExp, pageContent: string, entireWord = false): PdfSearchMatch[] {
+export function findPdfRegexMatches(expression: RegExp, pageContent: string, entireWord = false, maxMatches = Infinity): PdfSearchMatch[] {
   const page = regexPage(pageContent);
   const matches: PdfSearchMatch[] = [];
   expression.lastIndex = 0;
@@ -211,7 +211,10 @@ export function findPdfRegexMatches(expression: RegExp, pageContent: string, ent
     }
     const index = page.starts?.[match.index] ?? match.index;
     const end = page.ends?.[match.index + match[0].length - 1] ?? match.index + match[0].length;
-    if (!entireWord || isEntireWord(pageContent, index, end - index)) matches.push({ index, length: end - index });
+    if (!entireWord || isEntireWord(pageContent, index, end - index)) {
+      if (matches.length >= maxMatches) throw new RangeError("PDF regex match limit exceeded");
+      matches.push({ index, length: end - index });
+    }
   }
   return matches;
 }

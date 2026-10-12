@@ -1,7 +1,7 @@
 /** PDF read, fit-width and search checks. Run with pnpm verify:pdf. */
 import assert from "node:assert/strict";
 import { build } from "esbuild";
-import { mkdirSync, mkdtempSync, rmSync, symlinkSync, truncateSync, writeFileSync } from "node:fs";
+import { mkdirSync, mkdtempSync, readFileSync, rmSync, symlinkSync, truncateSync, writeFileSync } from "node:fs";
 import { createRequire } from "node:module";
 import { tmpdir } from "node:os";
 import { dirname, join } from "node:path";
@@ -55,6 +55,7 @@ try {
   assert.deepEqual(regexMatches("\\p{Letter}+", "中文 123"), [{ index: 0, length: 2 }]);
   const reusable = compilePdfRegex("a");
   assert.deepEqual(findPdfRegexMatches(reusable, "a"), findPdfRegexMatches(reusable, "a"));
+  assert.throws(() => findPdfRegexMatches(reusable, "aaa", false, 2), RangeError);
   console.log("ok   正则转义 / 字符类 / 量词 / 反向引用 / Unicode；零长度安全结束，大小写与全字可组合");
 
   // Exercise the installed PDF.js public controller and its real normalize /
@@ -62,16 +63,33 @@ try {
   // DOM stubs are needed; this does not claim to test browser text highlights.
   const previousDocument = globalThis.document;
   const previousWindow = globalThis.window;
+  const previousWorker = globalThis.Worker;
   globalThis.document = { documentElement: { style: {} }, createElement: () => ({ style: {} }) };
   globalThis.window = { requestAnimationFrame: (callback) => setTimeout(callback, 0) };
+  // Exercise asynchronous controller mapping deterministically; the real
+  // worker timeout and cancellation are covered in isolated Electron.
+  globalThis.Worker = class {
+    timer;
+    postMessage({ id, source, flags, content, entireWord }) {
+      this.timer = setTimeout(() => this.onmessage?.({ data: { id, matches: findPdfRegexMatches(new RegExp(source, flags), content, entireWord, 100_000) } }), 0);
+    }
+    terminate() { clearTimeout(this.timer); }
+  };
   try {
     const controllerModule = join(temporary, "pdf-find-controller.mjs");
     const installed = createRequire(import.meta.url);
+    const { patchPdfAsyncFind } = await import("./pdf-find-plugin.ts");
+    const viewerSource = readFileSync(installed.resolve("pdfjs-dist/legacy/web/pdf_viewer.mjs"), "utf8");
+    const patchedViewer = join(temporary, "pdf-viewer.mjs");
+    writeFileSync(patchedViewer, patchPdfAsyncFind(viewerSource));
+    assert.throws(() => patchPdfAsyncFind(viewerSource.replace("  #calculateMatch(pageIndex) {", "  #changed(pageIndex) {")));
     await build({
       entryPoints: [join(dirname(fileURLToPath(import.meta.url)), "src", "lib", "pdfViewer.ts")],
       bundle: true, platform: "node", format: "esm", outfile: controllerModule, logLevel: "silent",
       plugins: [{ name: "installed-pdfjs", setup(builder) {
-        builder.onResolve({ filter: /^pdfjs-dist\// }, ({ path }) => ({ path: installed.resolve(path), external: true }));
+        builder.onResolve({ filter: /^pdfjs-dist\// }, ({ path }) => ({ path: path.endsWith("/web/pdf_viewer.mjs") ? patchedViewer : installed.resolve(path), external: true }));
+        builder.onResolve({ filter: /^virtual:pdf-regex-worker$/ }, () => ({ path: "regex-worker", namespace: "test-worker" }));
+        builder.onLoad({ filter: /.*/, namespace: "test-worker" }, () => ({ contents: 'export const regexWorkerSource = "";', loader: "js" }));
       } }],
     });
     const { PdfFindController } = await import(pathToFileURL(controllerModule).href);
@@ -110,6 +128,7 @@ try {
   } finally {
     if (previousDocument === undefined) delete globalThis.document; else globalThis.document = previousDocument;
     if (previousWindow === undefined) delete globalThis.window; else globalThis.window = previousWindow;
+    if (previousWorker === undefined) delete globalThis.Worker; else globalThis.Worker = previousWorker;
   }
   console.log("ok   匹配版本 PDF.js 的原始索引映射：连字 / 分数 / 重音 / 跨行断词；普通查找与正则切换正确");
   const modes = ["single", "double", "cover"];
@@ -210,6 +229,7 @@ try {
   assert.equal((await read("report.PDF")).kind, "pdf");
   assert.equal((await read("text.txt")).ok, false);
   console.log("ok   切换文件夹后 PDF 按当前文件夹根读取");
+  await import("./verify-pdf-lifecycle.mjs");
   console.log("PDF VERIFY PASSED");
 } finally {
   await plugin?.onUnload();

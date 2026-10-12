@@ -25,26 +25,33 @@ export function createPdfSession(src: string, onFailure?: () => void) {
   }
   let worker: PDFWorker | undefined;
   let released = false;
+  let disposed = false;
+  let destroyTask: (() => Promise<void>) | undefined;
   const release = () => {
     if (released) return;
     released = true;
     port.onerror = null;
-    worker?.destroy();
-    port.terminate();
-    URL.revokeObjectURL(url);
+    // Cleanup failures must not prevent releasing the native port or its URL.
+    try { worker?.destroy(); } catch {}
+    try { port.terminate(); } catch {}
+    try { URL.revokeObjectURL(url); } catch {}
   };
-  let signalFailure!: () => void;
-  const failed = new Promise<void>((resolve) => { signalFailure = resolve; });
   const workerFailure = new Promise<never>((_resolve, reject) => {
     port.onerror = (event) => {
       event.preventDefault();
-      // A dead worker cannot acknowledge PDF.js's asynchronous destroy request.
+      if (released) return;
+      const notify = !disposed;
       release();
-      signalFailure();
       reject(new Error(event.message || "PDF worker failed"));
-      onFailure?.();
+      // The lifecycle transform also cleans frontend resources after a dead
+      // worker: disposal must await that cleanup, not race this error signal.
+      void destroyTask?.();
+      if (notify) {
+        try { onFailure?.(); } catch {}
+      }
     };
   });
+  workerFailure.catch(() => {});
   try {
     worker = PDFWorker.create({ port, verbosity: VerbosityLevel.ERRORS });
     const task = getDocument({
@@ -63,12 +70,12 @@ export function createPdfSession(src: string, onFailure?: () => void) {
       verbosity: VerbosityLevel.ERRORS,
     });
     let disposal: Promise<void> | undefined;
-    return {
-      promise: Promise.race([task.promise, workerFailure]),
-      destroy(): Promise<void> {
-        return (disposal ??= Promise.race([task.destroy().catch(() => {}), failed]).finally(release));
-      },
+    const destroy = (): Promise<void> => {
+      disposed = true;
+      return (disposal ??= Promise.resolve().then(() => task.destroy()).catch(() => {}).finally(release));
     };
+    destroyTask = destroy;
+    return { promise: Promise.race([task.promise, workerFailure]), destroy };
   } catch (error) {
     release();
     throw error;
