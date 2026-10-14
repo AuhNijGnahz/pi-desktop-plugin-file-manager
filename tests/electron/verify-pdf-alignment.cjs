@@ -3,24 +3,27 @@ const fs = require('node:fs/promises');
 const assert = require('node:assert/strict');
 const crypto = require('node:crypto');
 const { createRequire } = require('node:module');
-const scratch = process.env.PI_SCRATCH_DIR;
-const root = process.cwd();
-const qa = createRequire(path.join(scratch, 'pdf-search-review/tests/electron/package.json'));
-const { _electron } = qa('playwright');
-
+const os = require('node:os');
+const from = (directory) => directory ? createRequire(path.join(path.resolve(directory), 'package.json')) : require;
+const { _electron } = from(process.env.PDF_PLAYWRIGHT_DIR)('playwright');
+const electronBinary = from(process.env.PDF_ELECTRON_DIR)('electron');
+const root = path.resolve(__dirname, '../..');
 
 (async () => {
-  const source = process.env.PDF_ALIGNMENT_FIXTURE || path.join(root, 'tests/electron/fixtures/alignment.pdf');
-  const temporary = await fs.mkdtemp(path.join(scratch, 'pdf6-alignment-check-'));
+  const source = process.env.PDF_ALIGNMENT_FIXTURE || path.join(__dirname, 'fixtures/alignment.pdf');
+  const temporary = await fs.mkdtemp(path.join(os.tmpdir(), 'pifm-pdf-alignment-'));
   const fixtures = path.join(temporary, 'project');
-  await fs.mkdir(fixtures);
-  const bytes = await fs.readFile(source);
-  const hash = crypto.createHash('sha256').update(bytes).digest('hex');
-  await fs.writeFile(path.join(fixtures, 'alignment.pdf'), bytes);
-  await fs.writeFile(path.join(fixtures, 'notes.txt'), 'Alignment fixture closed.');
-  const app = await _electron.launch({ executablePath: qa('electron'), args: [path.join(root, 'tests/electron/main.cjs')], env: { ...process.env, PDF_PLUGIN_DIR: process.env.PDF_PLUGIN_DIR || root, PDF_FIXTURE_DIR: fixtures, PDF_PROFILE_DIR: path.join(temporary, 'profile') } });
+  const evidence = process.env.PDF_EVIDENCE_DIR || path.join(temporary, 'evidence');
   const errors = [];
+  let app;
   try {
+    await fs.mkdir(fixtures);
+    await fs.mkdir(evidence, { recursive: true });
+    const bytes = await fs.readFile(source);
+    const hash = crypto.createHash('sha256').update(bytes).digest('hex');
+    await fs.writeFile(path.join(fixtures, 'alignment.pdf'), bytes);
+    await fs.writeFile(path.join(fixtures, 'notes.txt'), 'Alignment fixture closed.');
+    app = await _electron.launch({ executablePath: electronBinary, args: [path.join(__dirname, 'main.cjs')], env: { ...process.env, PDF_PLUGIN_DIR: process.env.PDF_PLUGIN_DIR || root, PDF_FIXTURE_DIR: fixtures, PDF_PROFILE_DIR: path.join(temporary, 'profile') } });
     const page = await app.firstWindow();
     page.setDefaultTimeout(20000);
     page.on('pageerror', error => errors.push(String(error)));
@@ -108,10 +111,10 @@ const { _electron } = qa('playwright');
     assert.deepEqual(requests, []);
     assert.deepEqual(resources, { created: resources.created, terminated: resources.created, active: 0, urls: 0 });
     const report = { ok: true, measurement: withInk, selected: 'finite union', resources, requests, errors, hash };
-    await fs.writeFile(path.join(scratch, 'pdf6-alignment-fixture-result.json'), JSON.stringify(report, null, 2));
+    await fs.writeFile(path.join(evidence, 'pdf-alignment-result.json'), JSON.stringify(report, null, 2));
     console.log(JSON.stringify(report, null, 2));
   } finally {
-    await app.close();
-    await fs.rm(temporary, { recursive: true, force: true });
+    try { await app?.close(); }
+    finally { await fs.rm(temporary, { recursive: true, force: true }); }
   }
 })().catch(error => { console.error(error); process.exitCode = 1; });

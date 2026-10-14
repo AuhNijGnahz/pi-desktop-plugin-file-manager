@@ -15,7 +15,7 @@ npm run verify:alignment
 npm run verify:resources
 ```
 
-测试依赖只供 QA 使用，不进入运行包。也可通过 `PDF_ELECTRON_DIR` 和 `PDF_PLAYWRIGHT_DIR` 指向已有、包含对应 `node_modules` 的工具目录，再运行 `node tests/electron/verify-pdf.cjs`；无需在插件中安装这些依赖。`PDF_PLUGIN_DIR` 可指向解包后的安装包，`PDF_EVIDENCE_DIR` 可指定截图目录。这两个路径应只指向用于测试的文件与输出。
+以上三条桌面检查命令默认加载当前 `tests/electron` 目录安装的依赖，并在 `os.tmpdir()` 中创建项目和 profile；无需设置 `PI_SCRATCH_DIR`，也不依赖作者的临时工具目录。测试依赖只供 QA 使用，不进入运行包。`PDF_ELECTRON_DIR` 和 `PDF_PLAYWRIGHT_DIR` 可分别指向已有、包含对应 `node_modules` 的工具目录，再从仓库根目录运行 `node tests/electron/verify-pdf.cjs`、`node tests/electron/verify-pdf-alignment.cjs` 或 `node tests/electron/verify-pdf-resources.cjs`。`PDF_PLUGIN_DIR` 可指向解包后的安装包，`PDF_EVIDENCE_DIR` 可指定保留截图 / JSON 的目录（对齐结果为 `pdf-alignment-result.json`）；未指定时，证据随临时项目清理，结果仍输出到控制台。这些路径应只指向用于测试的文件与输出。
 
 正式打包前，在仓库根目录运行 `node scripts/prepare-package.mjs`，再对 `dist/runtime` 使用官方 `PluginCheck` / `PluginPack`；该运行目录不包含 `tests/` 或 QA 依赖。可用 `PDF_PLUGIN_DIR` 指向此目录执行同一组桌面检查。
 
