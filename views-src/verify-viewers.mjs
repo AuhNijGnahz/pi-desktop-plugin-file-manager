@@ -198,6 +198,15 @@ const main = async () => {
     "图片读响应没有文本、只有 data URI",
   );
 
+  const pdfRead = openFile.toOpenFile(
+    { ok: true, kind: "pdf", path: "report.PDF", size: 9, mtimeMs: 1, mime: "application/pdf", dataUri: "data:application/pdf;base64,AA" },
+    9,
+  );
+  check(
+    pdfRead.kind === "pdf" && pdfRead.mime === "application/pdf" && pdfRead.text === "" && pdfRead.git == null,
+    "PDF 保留二进制数据、不进入文本编辑或逐行差异",
+  );
+
   const tooLargeRead = openFile.toOpenFile(
     { ok: true, kind: "tooLarge", path: "big.mp4", size: 99, mtimeMs: 1, limit: 24 },
     9,
@@ -278,9 +287,9 @@ const main = async () => {
 
   const { contentKind, tabs, activeTabKey } = pane;
   const kinds = new Set([
-    "editor", "diff", "markdown", "table", "tree", "image", "media", "sqlite", "binary", "tooLarge",
+    "editor", "diff", "markdown", "table", "tree", "image", "media", "pdf", "sqlite", "binary", "tooLarge",
   ]);
-  const fileKinds = ["text", "image", "media", "sqlite", "binary", "tooLarge"];
+  const fileKinds = ["text", "image", "media", "pdf", "sqlite", "binary", "tooLarge"];
   const viewerModes = ["source", "markdown", "table", "tree"];
 
   // 全组合扫描：任何输入下都只能是一种内容视图（单值本身就是保证，这里是防回归）
@@ -301,7 +310,7 @@ const main = async () => {
     "全组合扫描后仍是单值（每次只返回一个 kind）",
     `${combinations} combos`,
   );
-  check(seen.size === 10, [...seen].join(","), "十种内容视图都真的可达（没有被写死的分支）");
+  check(seen.size === 11, [...seen].join(","), "十一种内容视图都可达（含 PDF）");
 
   check(
     contentKind({ fileKind: "text", viewerMode: "markdown", diffOpen: true }) === "diff" &&
@@ -323,6 +332,7 @@ const main = async () => {
   check(
     contentKind({ fileKind: "image", viewerMode: "source", diffOpen: false }) === "image" &&
       contentKind({ fileKind: "media", viewerMode: "source", diffOpen: false }) === "media" &&
+      contentKind({ fileKind: "pdf", viewerMode: "source", diffOpen: false }) === "pdf" &&
       contentKind({ fileKind: "sqlite", viewerMode: "source", diffOpen: false }) === "sqlite" &&
       contentKind({ fileKind: "binary", viewerMode: "source", diffOpen: false }) === "binary" &&
       contentKind({ fileKind: "tooLarge", viewerMode: "source", diffOpen: false }) === "tooLarge",

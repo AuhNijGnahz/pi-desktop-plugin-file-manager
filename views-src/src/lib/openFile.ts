@@ -13,7 +13,7 @@
 
 import type { GitEntryStatus, ReadResponse, SqliteInfo } from "./rpc";
 
-export type OpenFileKind = "text" | "binary" | "image" | "media" | "tooLarge" | "sqlite";
+export type OpenFileKind = "text" | "binary" | "image" | "media" | "pdf" | "tooLarge" | "sqlite";
 
 export type OpenFile = {
   path: string;
@@ -23,7 +23,7 @@ export type OpenFile = {
   bom: boolean;
   size: number;
   mtimeMs: number;
-  /** 图片 / 音视频：主进程读好的 data URI（面板是 file://，拿不到真实路径）。 */
+  /** 图片 / 音视频 / PDF：主进程读好的 data URI（面板是 file://，拿不到真实路径）。 */
   dataUri?: string;
   mime?: string;
   /**
@@ -40,7 +40,7 @@ export type OpenFile = {
   loadToken: number;
 };
 
-/** 读响应 → 打开中的文件。字节类（图片 / 音视频）只带 data URI，没有文本。 */
+/** 读响应 → 打开中的文件。字节类（图片 / 音视频 / PDF）只带 data URI，没有文本。 */
 export function toOpenFile(response: ReadResponse, loadToken: number): OpenFile {
   const base = { path: response.path, size: response.size, mtimeMs: response.mtimeMs, loadToken };
   const empty = { text: "", eol: "lf" as const, bom: false };
@@ -50,7 +50,7 @@ export function toOpenFile(response: ReadResponse, loadToken: number): OpenFile 
   if (response.kind === "text") {
     return { ...base, kind: "text", text: response.text, eol: response.eol, bom: response.bom, git };
   }
-  if (response.kind === "image" || response.kind === "media") {
+  if (response.kind === "image" || response.kind === "media" || response.kind === "pdf") {
     return { ...base, ...empty, kind: response.kind, mime: response.mime, dataUri: response.dataUri };
   }
   if (response.kind === "tooLarge") {

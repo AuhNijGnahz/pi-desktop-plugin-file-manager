@@ -544,14 +544,15 @@ export default function App() {
       }
 
       // 项目外的文件（宿主请求打开的会话临时文件 / 附件）没有可监听的基点。
-      if (external || !openPathRef.current) return;
+      const currentPath = openPathRef.current;
+      if (!currentPath || isExternalPath(currentPath)) return;
       if (decision.warn) {
         setExternalChange(true);
         return;
       }
       if (decision.reload) {
         setExternalChange(false);
-        void openEntry({ path: openPathRef.current });
+        void openEntry({ path: currentPath });
       }
     },
     [loadDirectory, openEntry],

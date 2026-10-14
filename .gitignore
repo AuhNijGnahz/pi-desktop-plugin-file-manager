@@ -1,5 +1,7 @@
 # 依赖与构建中间产物
 views-src/node_modules/
+tests/electron/node_modules/
+tests/electron/package-lock.json
 
 # 插件打包产物
 dist/
