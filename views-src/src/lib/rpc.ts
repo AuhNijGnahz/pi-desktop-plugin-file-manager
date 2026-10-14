@@ -183,16 +183,16 @@ export type TextRead = {
 };
 
 /**
- * 图片与音视频把字节以 data URI 带过来——面板是 file:// 的沙箱页，
+ * 图片、音视频和 PDF 把字节以 data URI 带过来——面板是 file:// 的沙箱页，
  * 没有文件系统，相对路径只会指回视图自己。
  */
 export type DataRead = {
   ok: true;
-  kind: "image" | "media";
+  kind: "image" | "media" | "pdf";
   path: string;
   size: number;
   mtimeMs: number;
-  /** image/png、video/mp4 这类；视图据此选 <img> 还是 <video>/<audio>。 */
+  /** image/png、video/mp4、application/pdf 这类；视图据此选对应查看器。 */
   mime: string;
   dataUri: string;
 };

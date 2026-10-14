@@ -20,8 +20,8 @@
  *   ③ 原子写：临时文件 → fsync → chmod → rename，中断不留半写文件
  *   ④ 冲突检测：mtimeMs + size 作为乐观锁，外部改动过的文件不静默覆盖
  *   ⑤ 写入审计：追加到插件数据目录 write-audit.jsonl（宿主审计不到这条路径）
- *   ⑥ 上限：文本预览 2 MiB / 图片 8 MiB / 音视频 24 MiB / 写入 8 MiB /
- *      单目录 3000 条 / 搜索分页（后两类要走 base64，所以单独设限）
+ *   ⑥ 上限：文本预览 2 MiB / 图片 8 MiB / 音视频与 PDF 24 MiB / 写入 8 MiB /
+ *      单目录 3000 条 / 搜索分页（二进制预览走 base64，所以单独设限）
  *   ⑦ 宿主请求打开：宿主可以要求视图打开项目之外的文件（会话临时目录 / 附件，
  *      路径由宿主自己选定）。视图带 external: true 时才放行绝对路径，这条路径
  *      不做根内包含校验（它本来就在根外），黑名单与 realpath 检查照旧全量生效。
@@ -46,6 +46,7 @@ const path = require("node:path");
 const MAX_READ_BYTES = 2 * 1024 * 1024;
 const MAX_IMAGE_BYTES = 8 * 1024 * 1024;
 const MAX_MEDIA_BYTES = 24 * 1024 * 1024;
+const MAX_PDF_BYTES = 24 * 1024 * 1024;
 const MAX_WRITE_BYTES = 8 * 1024 * 1024;
 const MAX_LIST_ENTRIES = 3000;
 /** prefs.projectRoots 最多记多少个项目；超出按最久没用过的淘汰。 */
@@ -1645,6 +1646,19 @@ async function handleRead(payload) {
         ...base,
       };
     }
+  }
+
+  // PDF 独立于文本 / 二进制判定；损坏或加密文档由 PDF.js 给出明确提示。
+  // 沿用 resolveTarget 的根包含、凭据黑名单和宿主指定外部文件的检查。
+  if (extension === ".pdf") {
+    if (stat.size > MAX_PDF_BYTES) {
+      return { ok: true, kind: "tooLarge", limit: MAX_PDF_BYTES, ...base };
+    }
+    const buffer = await fs.readFile(abs);
+    if (buffer.length > MAX_PDF_BYTES) {
+      return { ok: true, kind: "tooLarge", limit: MAX_PDF_BYTES, ...base, size: buffer.length };
+    }
+    return { ok: true, kind: "pdf", mime: "application/pdf", dataUri: asDataUri("application/pdf", buffer), ...base };
   }
 
   // 图片与音视频返回 data URI：视图在 file:// 下拿不到项目里的文件，

@@ -23,6 +23,7 @@ export type ContentKind =
   | "tree"
   | "image"
   | "media"
+  | "pdf"
   | "sqlite"
   | "binary"
   | "tooLarge";
@@ -73,6 +74,7 @@ export function contentKind(input: {
   if (input.diffOpen) return "diff";
   if (input.fileKind === "image") return "image";
   if (input.fileKind === "media") return "media";
+  if (input.fileKind === "pdf") return "pdf";
   if (input.fileKind === "sqlite") return "sqlite";
   if (input.fileKind === "tooLarge") return "tooLarge";
   if (input.fileKind === "binary") return "binary";

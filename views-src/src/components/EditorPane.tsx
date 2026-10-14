@@ -15,6 +15,7 @@ import { CsvTable } from "./CsvTable";
 import { ImageView } from "./ImageView";
 import { JsonTree } from "./JsonTree";
 import { MediaPlayer } from "./MediaPlayer";
+import { PdfView } from "./PdfView";
 import { SqliteView } from "./SqliteView";
 import { gitColor, gitGlyph, gitTitle } from "../lib/git";
 import type { GitEntryStatus, GitStatusKind } from "../lib/rpc";
@@ -194,6 +195,7 @@ export function EditorPane({
   const mode = viewer?.mode ?? "source";
   const imageSrc = file?.kind === "image" ? file.dataUri : undefined;
   const mediaSrc = file?.kind === "media" ? file.dataUri : undefined;
+  const pdfSrc = file?.kind === "pdf" ? file.dataUri : undefined;
   const sqlite = file?.kind === "sqlite" ? file.sqlite : undefined;
   // 差异视图与图片 / 媒体 / 数据库一样，是「占住整个内容区」的一种形态：编辑器
   // 必须藏起来（CodeMirror 在 display:none 的容器里量不到尺寸）。
@@ -275,7 +277,7 @@ export function EditorPane({
 
             {/* 编辑 / 预览 / 变更 是一组互斥页签。切到编辑或预览就是「关掉变更」，
                 所以从任何一侧点进去都能再点回来，不会出现「预览还开着、差异又叠上来」。 */}
-            {paneTabList.length > 0 ? (
+            {paneTabList.length > 0 && file.kind !== "pdf" ? (
               <div
                 role="tablist"
                 aria-label={t("viewMode")}
@@ -328,12 +330,14 @@ export function EditorPane({
               onClick={onReload}
               d="M20 11a8 8 0 0 0-14.9-3.9L3 9M3 4v5h5M4 13a8 8 0 0 0 14.9 3.9L21 15M21 20v-5h-5"
             />
-            <IconButton
-              label={t("save")}
-              disabled={!dirty || saving || file.kind !== "text"}
-              onClick={onSave}
-              d="M19 21H5a2 2 0 0 1-2-2V5a2 2 0 0 1 2-2h11l5 5v11a2 2 0 0 1-2 2zM17 21v-8H7v8M7 3v5h8"
-            />
+            {file.kind !== "pdf" ? (
+              <IconButton
+                label={t("save")}
+                disabled={!dirty || saving || file.kind !== "text"}
+                onClick={onSave}
+                d="M19 21H5a2 2 0 0 1-2-2V5a2 2 0 0 1 2-2h11l5 5v11a2 2 0 0 1-2 2zM17 21v-8H7v8M7 3v5h8"
+              />
+            ) : null}
           </>
         ) : (
           <span className="px-1 text-[11.5px]" style={{ color: "var(--muted)" }}>
@@ -447,6 +451,10 @@ export function EditorPane({
             size={file.size}
             t={t}
           />
+        ) : null}
+
+        {content === "pdf" && file && pdfSrc ? (
+          <PdfView key={`${file.path}#${file.loadToken}`} src={pdfSrc} name={baseNameOf(file.path)} size={file.size} locale={locale} t={t} />
         ) : null}
 
         {content === "sqlite" && file && sqlite ? (
