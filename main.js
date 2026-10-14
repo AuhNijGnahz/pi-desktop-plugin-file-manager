@@ -737,27 +737,28 @@ const GIT_STATUS_RANK = {
   conflicted: 6,
 };
 
-let gitSpawn = null;
+let childSpawn = null;
 /**
  * 惰性拿 child_process.spawn：万一这个运行时不给（非 Node 宿主、被裁剪的构建），
- * 整个功能静默降级成「没有状态」，列目录照旧。
+ * 用到它的功能各自静默降级（git 变「没有状态」、编辑器探测变「没有候选」），
+ * 列目录、读写、保存一律照旧。
  */
-function gitSpawnFn() {
-  if (gitSpawn === null) {
+function childSpawnFn() {
+  if (childSpawn === null) {
     try {
-      gitSpawn = require("node:child_process").spawn;
+      childSpawn = require("node:child_process").spawn;
     } catch {
-      gitSpawn = false;
+      childSpawn = false;
     }
   }
-  return gitSpawn || null;
+  return childSpawn || null;
 }
 
 /** 探测成功的 git 可执行文件；null = 还没试过。 */
 let gitBinary = null;
 
 function runGit(rootPath, binary, args, { maxBytes, timeoutMs = GIT_TIMEOUT_MS } = {}) {
-  const spawn = gitSpawnFn();
+  const spawn = childSpawnFn();
   if (!spawn) return Promise.reject(fail("GIT_UNAVAILABLE", "child processes are unavailable"));
   return new Promise((resolve, reject) => {
     let child;
@@ -1511,6 +1512,725 @@ async function handleWatch(payload) {
     // 游标已经落到有界历史之外：视图据此也按「可能还有别的变化」做一次保守刷新。
     stale: since > 0 && watchHistory.length > 0 && since < watchHistory[0].revision,
   };
+}
+
+// ── 编辑器探测与「通过…打开」（0.9.0） ─────────────────────────────────────
+//
+// 树里的右键菜单要列出这台机器上**真实存在**的编辑器。探测刻意不遍历目录：
+//   ① 注册表 App Paths（HKLM / WOW6432Node / HKCU）——安装器几乎都会在这里留一条
+//      `<name>.exe` → 绝对路径，一次 reg query 就能批量读出来；
+//   ② 注册表 StartMenuInternet 的 `shell\open\command`——浏览器（Chrome / Edge /
+//      Firefox / Zen 这类）只在这里注册，而且这里给的是完整可执行文件；
+//   ③ PATH 上按候选命令名找可执行文件（VS Code / Zed 会装 bin 目录）；
+//   ④ 少量由用户主目录推导出来的固定安装位置，各一次 stat。
+// 四者都是 O(候选数)，没有任何递归列目录——「遍历整个磁盘找软件」是这个功能最
+// 容易写出来的那个错误版本，也是最慢的一个。
+//
+// 结果按**日期**缓存一天，写进插件数据目录（editors.json）：多个 PI-Desktop 实例
+// 共享同一次探测，同一天里再打开菜单不会重复跑注册表。写盘失败只是退回「本进程内
+// 缓存」，功能不受影响；探测不到时菜单里就只剩「默认应用」一项——绝不摆一个点了
+// 没反应的编辑器上去。
+//
+// 只跑得到 .exe 的才算数（Windows）：.cmd / .bat 这类 shim 需要经 cmd.exe 执行，
+// 而把用户项目里的路径拼进命令行是多余的注入面。App Paths 与 PATH 上的编辑器
+// 几乎总能给出真正的 .exe，所以这条限制不会漏掉它们。
+
+const EDITOR_CACHE_FILE = "editors.json";
+const EDITOR_PROBE_TIMEOUT_MS = 4000;
+const EDITOR_PROBE_MAX_BYTES = 512 * 1024;
+
+/** 缓存按「日期」判定（本地时区），不是时间戳：一天只探测一次。 */
+function todayStamp() {
+  const now = new Date();
+  const month = `${now.getMonth() + 1}`.padStart(2, "0");
+  const day = `${now.getDate()}`.padStart(2, "0");
+  return `${now.getFullYear()}-${month}-${day}`;
+}
+
+/** 惰性拿同步 fs（探测里只做几次 stat，异步反而更啰嗦）。 */
+let fsSync = null;
+function fsSyncFn() {
+  if (fsSync === null) {
+    try {
+      fsSync = require("node:fs");
+    } catch {
+      fsSync = false;
+    }
+  }
+  return fsSync || null;
+}
+
+function isFileSync(target) {
+  const sync = fsSyncFn();
+  if (!sync || !target) return false;
+  try {
+    return sync.statSync(target).isFile();
+  } catch {
+    return false;
+  }
+}
+
+/**
+ * PATH 上查一个命令时尝试的文件名，按优先级排列（纯函数，verify-editors 直接断言）。
+ * 只有 .exe 会被采纳：见文件头关于 shim 的说明。
+ */
+function pathLookupOrder(name, platform, pathext) {
+  if (platform !== "win32") return [name];
+  const extensions = String(pathext || ".COM;.EXE;.BAT;.CMD")
+    .split(";")
+    .map((entry) => entry.trim().toLowerCase())
+    .filter(Boolean);
+  if (!extensions.includes(".exe")) extensions.unshift(".exe");
+  const ordered = [".exe", ...extensions.filter((entry) => entry !== ".exe")];
+  return ordered.map((extension) => `${name}${extension}`);
+}
+
+/** PATH 目录列表 + 候选文件名 → 第一个真实存在的文件（不遍历目录，只 stat 候选）。 */
+function findOnPath(name) {
+  const dirs = String(process.env.PATH || "")
+    .split(PLATFORM === "win32" ? ";" : ":")
+    .map((entry) => entry.replace(/^"|"$/g, "").trim())
+    .filter(Boolean);
+  const names = pathLookupOrder(name, PLATFORM, process.env.PATHEXT);
+  for (const dir of dirs) {
+    for (const candidate of names) {
+      const full = path.join(dir, candidate);
+      if (isFileSync(full)) return full;
+    }
+  }
+  return null;
+}
+
+const PLATFORM = process.platform;
+
+/**
+ * 常见编辑器与浏览器。`appPaths` 是注册表里的键名（小写比较），`commands` 是 PATH
+ * 上的命令名，`fixed` 是由用户主目录推导出来的固定安装位置。三者按顺序取第一个命中，
+ * 命中后再 stat 一次确认文件真的还在（注册表常留下已经卸载的条目）。
+ */
+function editorCandidates() {
+  if (PLATFORM === "darwin") return macEditorCandidates();
+  if (PLATFORM === "win32") return windowsEditorCandidates();
+  return linuxEditorCandidates();
+}
+
+function windowsEditorCandidates() {
+  const home = process.env.USERPROFILE || process.env.HOME || "";
+  const local = process.env.LOCALAPPDATA || (home ? path.join(home, "AppData", "Local") : "");
+  const programs = process.env.ProgramFiles || "C:\\Program Files";
+  const programsX86 = process.env["ProgramFiles(x86)"] || "C:\\Program Files (x86)";
+  const inLocal = (...rest) => (local ? [path.join(local, ...rest)] : []);
+  const inPrograms = (...rest) => [
+    path.join(programs, ...rest),
+    path.join(programsX86, ...rest),
+  ];
+
+  return [
+    {
+      id: "vscode",
+      label: "Visual Studio Code",
+      appPaths: ["code.exe"],
+      commands: ["code"],
+      fixed: [
+        ...inLocal("Programs", "Microsoft VS Code", "Code.exe"),
+        ...inPrograms("Microsoft VS Code", "Code.exe"),
+      ],
+    },
+    {
+      id: "vscode-insiders",
+      label: "Visual Studio Code Insiders",
+      appPaths: ["code - insiders.exe"],
+      commands: ["code-insiders"],
+      fixed: [...inLocal("Programs", "Microsoft VS Code Insiders", "Code - Insiders.exe")],
+    },
+    {
+      id: "cursor",
+      label: "Cursor",
+      appPaths: ["cursor.exe"],
+      commands: ["cursor"],
+      fixed: [...inLocal("Programs", "cursor", "Cursor.exe")],
+    },
+    {
+      id: "windsurf",
+      label: "Windsurf",
+      appPaths: ["windsurf.exe"],
+      commands: ["windsurf"],
+      fixed: [...inLocal("Programs", "Windsurf", "Windsurf.exe")],
+    },
+    {
+      id: "trae",
+      label: "Trae",
+      appPaths: ["trae.exe"],
+      commands: ["trae"],
+      fixed: [...inLocal("Programs", "Trae", "Trae.exe")],
+    },
+    {
+      id: "zed",
+      label: "Zed",
+      appPaths: ["zed.exe"],
+      commands: ["zed"],
+      fixed: [...inLocal("Programs", "Zed", "Zed.exe")],
+    },
+    {
+      id: "sublime",
+      label: "Sublime Text",
+      appPaths: ["sublime_text.exe", "subl.exe"],
+      commands: ["subl"],
+      fixed: [...inPrograms("Sublime Text", "sublime_text.exe")],
+    },
+    {
+      id: "notepadpp",
+      label: "Notepad++",
+      appPaths: ["notepad++.exe"],
+      commands: ["notepad++"],
+      fixed: [...inPrograms("Notepad++", "notepad++.exe")],
+    },
+    {
+      id: "chrome",
+      label: "Google Chrome",
+      kind: "browser",
+      appPaths: ["chrome.exe"],
+      menus: ["google chrome"],
+      commands: ["chrome"],
+      fixed: [
+        ...inPrograms("Google", "Chrome", "Application", "chrome.exe"),
+        ...inLocal("Google", "Chrome", "Application", "chrome.exe"),
+      ],
+    },
+    {
+      id: "edge",
+      label: "Microsoft Edge",
+      kind: "browser",
+      appPaths: ["msedge.exe"],
+      menus: ["microsoft edge"],
+      fixed: [...inPrograms("Microsoft", "Edge", "Application", "msedge.exe")],
+    },
+    {
+      id: "firefox",
+      label: "Firefox",
+      kind: "browser",
+      appPaths: ["firefox.exe"],
+      menus: ["firefox", "firefox.exe"],
+      fixed: [...inPrograms("Mozilla Firefox", "firefox.exe")],
+    },
+    {
+      id: "zen",
+      label: "Zen Browser",
+      kind: "browser",
+      appPaths: ["zen.exe"],
+      menus: ["zen", "zen browser", "zen.exe"],
+      commands: ["zen"],
+      fixed: [
+        ...inLocal("Zen", "zen.exe"),
+        ...inLocal("Programs", "Zen", "zen.exe"),
+        ...inPrograms("Zen Browser", "zen.exe"),
+      ],
+    },
+  ];
+}
+
+function macEditorCandidates() {
+  const home = process.env.HOME || "";
+  const apps = "/Applications";
+  return [
+    {
+      id: "vscode",
+      label: "Visual Studio Code",
+      commands: ["code", "code-insiders"],
+      fixed: [
+        path.join(apps, "Visual Studio Code.app", "Contents", "MacOS", "Electron"),
+        path.join(home, ".local", "bin", "code"),
+      ],
+    },
+    {
+      id: "cursor",
+      label: "Cursor",
+      commands: ["cursor"],
+      fixed: [path.join(apps, "Cursor.app", "Contents", "MacOS", "Cursor")],
+    },
+    {
+      id: "windsurf",
+      label: "Windsurf",
+      commands: ["windsurf"],
+      fixed: [path.join(apps, "Windsurf.app", "Contents", "MacOS", "Windsurf")],
+    },
+    {
+      id: "zed",
+      label: "Zed",
+      commands: ["zed"],
+      fixed: [
+        path.join(apps, "Zed.app", "Contents", "MacOS", "zed"),
+        path.join(home, ".local", "bin", "zed"),
+      ],
+    },
+    {
+      id: "sublime",
+      label: "Sublime Text",
+      commands: ["subl"],
+      fixed: [path.join(apps, "Sublime Text.app", "Contents", "SharedSupport", "bin", "subl")],
+    },
+    {
+      id: "nova",
+      label: "Nova",
+      commands: ["nova"],
+      fixed: [path.join(apps, "Nova.app", "Contents", "MacOS", "nova")],
+    },
+    {
+      id: "chrome",
+      label: "Google Chrome",
+      kind: "browser",
+      commands: [],
+      fixed: [path.join(apps, "Google Chrome.app", "Contents", "MacOS", "Google Chrome")],
+    },
+    {
+      id: "firefox",
+      label: "Firefox",
+      kind: "browser",
+      commands: [],
+      fixed: [path.join(apps, "Firefox.app", "Contents", "MacOS", "firefox")],
+    },
+    {
+      id: "zen",
+      label: "Zen Browser",
+      kind: "browser",
+      commands: ["zen"],
+      fixed: [
+        path.join(apps, "Zen.app", "Contents", "MacOS", "zen"),
+        path.join(apps, "Zen Browser.app", "Contents", "MacOS", "zen"),
+      ],
+    },
+  ];
+}
+
+function linuxEditorCandidates() {
+  const home = process.env.HOME || "";
+  const bin = "/usr/bin";
+  const share = [
+    path.join(bin, "code"),
+    "/usr/share/code/code",
+    "/snap/bin/code",
+    path.join(home, ".local", "bin", "code"),
+  ];
+  return [
+    { id: "vscode", label: "Visual Studio Code", commands: ["code"], fixed: share },
+    {
+      id: "cursor",
+      label: "Cursor",
+      commands: ["cursor"],
+      fixed: [path.join(bin, "cursor"), path.join(home, ".local", "bin", "cursor")],
+    },
+    {
+      id: "zed",
+      label: "Zed",
+      commands: ["zed"],
+      fixed: [path.join(bin, "zed"), "/usr/local/bin/zed", path.join(home, ".local", "bin", "zed")],
+    },
+    {
+      id: "sublime",
+      label: "Sublime Text",
+      commands: ["subl"],
+      fixed: [path.join(bin, "subl"), "/opt/sublime_text/sublime_text"],
+    },
+    {
+      id: "notepadqq",
+      label: "Notepadqq",
+      commands: ["notepadqq"],
+      fixed: [path.join(bin, "notepadqq")],
+    },
+    {
+      id: "chrome",
+      label: "Google Chrome",
+      kind: "browser",
+      commands: ["google-chrome", "chromium", "chromium-browser"],
+      fixed: [],
+    },
+    {
+      id: "firefox",
+      label: "Firefox",
+      kind: "browser",
+      commands: ["firefox"],
+      fixed: [path.join(bin, "firefox")],
+    },
+    {
+      id: "zen",
+      label: "Zen Browser",
+      kind: "browser",
+      commands: ["zen"],
+      fixed: [path.join(bin, "zen")],
+    },
+  ];
+}
+
+/** 注册表 App Paths 的 `reg query /s` 输出 → `<name>.exe`（小写）→ 绝对路径。 */
+function parseAppPathsRegistry(text) {
+  const found = new Map();
+  let current = null;
+  for (const raw of String(text).split(/\r?\n/)) {
+    const line = raw.trim();
+    const head = /^HKEY_[^\r\n]*?\\App Paths\\([^\\]+)$/.exec(line);
+    if (head) {
+      current = head[1].toLowerCase();
+      continue;
+    }
+    if (!current) continue;
+    const value = /^\(Default\)\s+REG_SZ\s+(.+)$/.exec(line);
+    if (value && !found.has(current)) found.set(current, value[1].trim());
+  }
+  return found;
+}
+
+/**
+ * StartMenuInternet 的 `reg query /s` 输出 → 子键名（小写）→ 可执行文件路径。
+ * 只认 `shell\open\command` 那一条，值形如 `"C:\…\chrome.exe" -- "%1"`。
+ */
+function parseStartMenuRegistry(text) {
+  const found = new Map();
+  let current = null;
+  let inCommand = false;
+  for (const raw of String(text).split(/\r?\n/)) {
+    const line = raw.trim();
+    const head = /^HKEY_[^\r\n]*?\\StartMenuInternet\\(.+)$/.exec(line);
+    if (head) {
+      const rest = head[1];
+      current = rest.split("\\")[0].toLowerCase();
+      inCommand = /\\shell\\open\\command$/i.test(rest);
+      continue;
+    }
+    if (!current || !inCommand) continue;
+    const value = /^\(Default\)\s+REG_SZ\s+(.+)$/.exec(line);
+    if (!value) continue;
+    const executable = executableFromCommand(value[1]);
+    if (executable && !found.has(current)) found.set(current, executable);
+  }
+  return found;
+}
+
+/** 从 shell 命令行里剥出可执行文件：`"C:\a b\x.exe" -- "%1"` → `C:\a b\x.exe`。 */
+function executableFromCommand(command) {
+  const trimmed = String(command).trim();
+  if (!trimmed) return null;
+  if (trimmed.startsWith('"')) {
+    const end = trimmed.indexOf('"', 1);
+    if (end > 1) return trimmed.slice(1, end);
+  }
+  const match = /^(.*?\.exe)(?:\s|$)/i.exec(trimmed);
+  if (match) return match[1].replace(/^"|"$/g, "").trim();
+  return null;
+}
+
+/** 起一个只读子进程并收它的 stdout；拿不到任何东西就返回空串（探测静默降级）。 */
+function runCapture(command, args, timeoutMs = EDITOR_PROBE_TIMEOUT_MS) {
+  const spawn = childSpawnFn();
+  if (!spawn) return Promise.resolve("");
+  return new Promise((resolve) => {
+    let child;
+    try {
+      child = spawn(command, args, { windowsHide: true, stdio: ["ignore", "pipe", "ignore"] });
+    } catch {
+      resolve("");
+      return;
+    }
+
+    let out = "";
+    let settled = false;
+    const finish = (value) => {
+      if (settled) return;
+      settled = true;
+      clearTimeout(timer);
+      resolve(value);
+    };
+    const timer = setTimeout(() => {
+      try {
+        child.kill();
+      } catch {
+        /* 已经退出了 */
+      }
+      finish("");
+    }, timeoutMs);
+
+    child.stdout?.setEncoding("utf8");
+    child.stdout?.on("data", (chunk) => {
+      out += chunk;
+      if (out.length >= EDITOR_PROBE_MAX_BYTES) {
+        try {
+          child.kill();
+        } catch {
+          /* 已经退出了 */
+        }
+        finish(out.slice(0, EDITOR_PROBE_MAX_BYTES));
+      }
+    });
+    child.on("error", () => finish(""));
+    child.on("close", () => finish(out));
+  });
+}
+
+/** reg.exe 的绝对路径（插件进程的 PATH 里通常没有 System32）。 */
+function regExePath() {
+  const systemRoot = process.env.SystemRoot || process.env.windir || "C:\\Windows";
+  const native = path.join(systemRoot, "System32", "reg.exe");
+  return isFileSync(native) ? native : "reg";
+}
+
+const REG_APP_PATH_KEYS = [
+  "HKLM\\SOFTWARE\\Microsoft\\Windows\\CurrentVersion\\App Paths",
+  "HKLM\\SOFTWARE\\WOW6432Node\\Microsoft\\Windows\\CurrentVersion\\App Paths",
+  "HKCU\\SOFTWARE\\Microsoft\\Windows\\CurrentVersion\\App Paths",
+];
+
+const REG_START_MENU_KEYS = [
+  "HKLM\\SOFTWARE\\Clients\\StartMenuInternet",
+  "HKLM\\SOFTWARE\\WOW6432Node\\Clients\\StartMenuInternet",
+  "HKCU\\SOFTWARE\\Clients\\StartMenuInternet",
+];
+
+/**
+ * 注册表两处 + PATH 的探测结果。注册表查询并行发起：6 次 reg.exe 一起跑，
+ * 总耗时是一次进程启动的量级（实测 100ms 上下），而不是它们的和。
+ * 非 Windows、没有 reg.exe、注册表读不到——一律返回空表，探测退化成 PATH + 固定路径。
+ */
+async function editorSources() {
+  const empty = { appPaths: new Map(), menus: new Map() };
+  if (PLATFORM !== "win32") return empty;
+
+  const reg = regExePath();
+  const outputs = await Promise.all([
+    ...REG_APP_PATH_KEYS.map((key) => runCapture(reg, ["query", key, "/s"])),
+    ...REG_START_MENU_KEYS.map((key) => runCapture(reg, ["query", key, "/s"])),
+  ]);
+
+  const appPaths = new Map();
+  for (const text of outputs.slice(0, REG_APP_PATH_KEYS.length)) {
+    for (const [key, value] of parseAppPathsRegistry(text)) {
+      if (!appPaths.has(key)) appPaths.set(key, value);
+    }
+  }
+
+  const menus = new Map();
+  for (const text of outputs.slice(REG_APP_PATH_KEYS.length)) {
+    for (const [key, value] of parseStartMenuRegistry(text)) {
+      if (!menus.has(key)) menus.set(key, value);
+    }
+  }
+
+  return { appPaths, menus };
+}
+
+/**
+ * 一个候选的命中位置：注册表 App Paths → StartMenuInternet → PATH → 固定路径。
+ *
+ * 注册表两种键名都要试**前缀**：StartMenuInternet 下的浏览器子键常带客户端哈希后缀
+ * （Firefox 是 `FIREFOX.EXE-308046b0af4a39cb`、Chromium 系是 `Chrome.HTM…`），
+ * 精确匹配会一个都命中不了。前缀匹配只在没有精确命中时兜底，且取最短的那个键
+ * （`chrome` 优先于 `chromehtml`），避免误配到同前缀的另一款软件。
+ */
+function lookupRegistryKey(map, key) {
+  const wanted = String(key).toLowerCase();
+  const exact = map.get(wanted);
+  if (exact) return exact;
+  let best = null;
+  let bestLength = Infinity;
+  for (const [name, value] of map) {
+    if (!name.startsWith(wanted)) continue;
+    if (name.length < bestLength) {
+      best = value;
+      bestLength = name.length;
+    }
+  }
+  return best;
+}
+
+function locateEditor(candidate, sources) {
+  for (const key of candidate.appPaths ?? []) {
+    const hit = lookupRegistryKey(sources.appPaths, key);
+    if (hit && isFileSync(hit)) return hit;
+  }
+  for (const key of candidate.menus ?? []) {
+    const hit = lookupRegistryKey(sources.menus, key);
+    if (hit && isFileSync(hit)) return hit;
+  }
+  for (const name of candidate.commands ?? []) {
+    const hit = findOnPath(name);
+    if (hit && isOnlyExtension(hit, ".exe")) return hit;
+  }
+  for (const fixed of candidate.fixed ?? []) {
+    if (isFileSync(fixed)) return fixed;
+  }
+  return null;
+}
+
+/** PATH 命中必须是 .exe（Windows）；其它平台命令本身就是可执行文件。 */
+function isOnlyExtension(target, extension) {
+  if (PLATFORM !== "win32") return true;
+  return target.toLowerCase().endsWith(extension);
+}
+
+/**
+ * 全量探测一次；候选按表里的顺序，去重后返回 { id, label, kind, command }。
+ *
+ * kind 是「这是什么程序」（editor / browser），不是「能不能打开这个文件」——
+ * 后者取决于被点的文件，由视图按扩展名判定（lib/editors.ts）。放在这里是因为
+ * 只有探测侧知道 Chrome 是浏览器：一旦写成视图里的 id 名单，加一款浏览器就要改两处。
+ */
+async function probeEditors() {
+  const sources = await editorSources();
+  const found = [];
+  const seen = new Set();
+  for (const candidate of editorCandidates()) {
+    const command = locateEditor(candidate, sources);
+    if (!command) continue;
+    const key = command.toLowerCase();
+    if (seen.has(key)) continue;
+    seen.add(key);
+    found.push({
+      id: candidate.id,
+      label: candidate.label,
+      kind: candidate.kind === "browser" ? "browser" : "editor",
+      command,
+    });
+  }
+  return found;
+}
+
+/** 缓存文件形状：{ stamp, platform, editors }。任何形状不对都当没有缓存。 */
+async function readEditorCacheFile(stamp) {
+  if (!dataPath) return null;
+  try {
+    const raw = await fs.readFile(path.join(dataPath, EDITOR_CACHE_FILE), "utf8");
+    const parsed = JSON.parse(raw);
+    if (!parsed || parsed.stamp !== stamp || parsed.platform !== PLATFORM) return null;
+    if (!Array.isArray(parsed.editors)) return null;
+    const editors = parsed.editors
+      .filter(
+        (entry) =>
+          entry &&
+          typeof entry.id === "string" &&
+          typeof entry.label === "string" &&
+          typeof entry.command === "string",
+      )
+      // 老缓存（0.9.0 之前的版本没写 kind）当作编辑器：宁可少一项「用浏览器打开」，
+      // 也不把编辑器误判成浏览器而从普通文件上删掉。
+      .map((entry) => ({
+        id: entry.id,
+        label: entry.label,
+        kind: entry.kind === "browser" ? "browser" : "editor",
+        command: entry.command,
+      }));
+    return { stamp, platform: PLATFORM, editors };
+  } catch {
+    return null;
+  }
+}
+
+async function writeEditorCacheFile(value) {
+  if (!dataPath) return;
+  try {
+    await fs.writeFile(
+      path.join(dataPath, EDITOR_CACHE_FILE),
+      `${JSON.stringify(value)}\n`,
+      "utf8",
+    );
+  } catch {
+    /* 写不进去只是下次重新探测 */
+  }
+}
+
+/** 本进程内缓存 + 同一天的落盘缓存；并发调用共用同一次探测。 */
+let editorCache = null;
+let editorProbe = null;
+
+async function detectEditors() {
+  const stamp = todayStamp();
+  if (editorCache && editorCache.stamp === stamp) return editorCache;
+
+  if (!editorProbe) {
+    editorProbe = (async () => {
+      const cached = await readEditorCacheFile(stamp);
+      if (cached) return cached;
+      const editors = await probeEditors();
+      const fresh = { stamp, platform: PLATFORM, editors };
+      await writeEditorCacheFile(fresh);
+      return fresh;
+    })();
+  }
+
+  try {
+    editorCache = await editorProbe;
+  } finally {
+    editorProbe = null;
+  }
+  return editorCache;
+}
+
+/**
+ * 交给外部编辑器的环境变量。插件进程跑在宿主给的最小环境里（只有 PATH / SystemRoot /
+ * USERPROFILE 等十来个变量），而编辑器启动时通常要读 APPDATA / LOCALAPPDATA 找自己的
+ * 配置与扩展。这两个变量的位置在 Windows 上是固定的，直接从主目录推出来补上；
+ * 其余保持沿袭，不伪造。
+ */
+function editorEnv() {
+  const env = { ...process.env };
+  const home = env.USERPROFILE || env.HOME || "";
+  if (home) {
+    if (!env.APPDATA) env.APPDATA = path.join(home, "AppData", "Roaming");
+    if (!env.LOCALAPPDATA) env.LOCALAPPDATA = path.join(home, "AppData", "Local");
+  }
+  return env;
+}
+
+/**
+ * 用指定编辑器打开一个绝对路径。
+ *
+ * 走的是 spawn 而不是 shell：编辑器是可执行文件、参数是一个绝对路径，两者之间不需要
+ * 命令行这一层（有 shell 就有注入面）。detached + stdio ignore + unref，编辑器是用户
+ * 的窗口，不该随面板关闭而消失，也不该把插件进程拖住。
+ */
+function launchEditor(command, target) {
+  const spawn = childSpawnFn();
+  if (!spawn) throw fail("EDITOR_UNAVAILABLE", "child processes are unavailable");
+  let child;
+  try {
+    child = spawn(command, [target], {
+      cwd: path.dirname(target),
+      detached: true,
+      stdio: "ignore",
+      windowsHide: true,
+      env: editorEnv(),
+    });
+  } catch (error) {
+    throw fail("EDITOR_UNAVAILABLE", String(error?.message ?? error));
+  }
+  child.on("error", () => {
+    /* 编辑器起不来只是没反应，面板不该因此报错 */
+  });
+  child.unref();
+}
+
+async function handleEditors() {
+  const cache = await detectEditors();
+  return {
+    ok: true,
+    platform: PLATFORM,
+    stamp: cache.stamp,
+    // kind 一并给视图：它据此决定「这个程序要不要出现在这个文件上」（见 lib/editors.ts）。
+    editors: cache.editors.map((entry) => ({ id: entry.id, label: entry.label, kind: entry.kind })),
+  };
+}
+
+async function handleOpenWith(payload) {
+  if (payload?.external === true) {
+    // 编辑器 command 绝不由视图指定，只认 id；external 是「宿主自己选定的项目外路径」
+    // 那条通道的标记，这里不该出现——与其放行，不如明确拒绝。
+    throw fail("INVALID_PATH", "external paths are not accepted here");
+  }
+  const target = await resolveTarget(payload, "read");
+  const cache = await detectEditors();
+  const editor = cache.editors.find((entry) => entry.id === payload?.id);
+  if (!editor) throw fail("UNKNOWN_EDITOR", "that editor is not available on this machine");
+
+  launchEditor(editor.command, target.abs);
+  await audit({ api: "fm.openWith", path: `${editor.id}: ${target.rel}`, result: "ok" });
+  return { ok: true, editor: { id: editor.id, label: editor.label, kind: editor.kind } };
 }
 
 // ── 读 ──────────────────────────────────────────────────────────────────────
@@ -2615,6 +3335,10 @@ const CHANNELS = {
   "fm.sqlite.query": handleSqliteQuery,
   "fm.git.diff": handleGitDiff,
   "fm.watch": handleWatch,
+  // 编辑器探测与「通过…打开」（0.9.0）。前者一天只真的探一次（落盘缓存，多开共享），
+  // 后者只认探测结果里的 id，视图指定不了可执行文件。
+  "fm.editors": handleEditors,
+  "fm.openWith": handleOpenWith,
 };
 
 async function onPanelInvoke(channel, payload) {
@@ -2649,6 +3373,9 @@ async function onUnload() {
   invalidateGitSnapshots();
   // 监听必须随插件一起走：漏关就是一只挂在别人项目上的眼睛（而且是 persistent 的）。
   stopWatching();
+  // 编辑器探测的内存缓存跟着插件走；落盘的 editors.json 留着（今天之内别的实例还能用）。
+  editorCache = null;
+  editorProbe = null;
 }
 
 module.exports = {
@@ -2676,5 +3403,17 @@ module.exports = {
     WATCH_DEBOUNCE_MS,
     SELF_WRITE_SUPPRESS_MS,
     WATCH_HISTORY_LIMIT,
+    // 编辑器探测（0.9.0）：输出形态与缓存判定都是纯函数，verify-editors.mjs 直接断言
+    // （注册表 / shell 命令行 / PATH 候选名这几种文本解析错了，菜单里就会多出一个
+    // 点了没反应的编辑器，甚至漏掉机器上真实存在的那个）。
+    parseAppPathsRegistry,
+    parseStartMenuRegistry,
+    executableFromCommand,
+    pathLookupOrder,
+    todayStamp,
+    lookupRegistryKey,
+    editorCandidates,
+    detectEditors,
+    EDITOR_CACHE_FILE,
   },
 };

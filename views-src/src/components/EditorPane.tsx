@@ -11,6 +11,7 @@ import { isDocumentLoaded, type OpenFile } from "../lib/openFile";
  import { invoke } from "../lib/bridge";
  import { absolutePathOf } from "../lib/roots";
  import type { WorkspaceRoot } from "../lib/roots";
+import { copyText } from "../lib/clipboard";
 import { CsvTable } from "./CsvTable";
 import { ImageView } from "./ImageView";
 import { JsonTree } from "./JsonTree";
@@ -100,30 +101,7 @@ export function EditorPane({
   const copyTimer = useRef<number | null>(null);
   const copyPath = useCallback(
     async (path: string) => {
-      let ok = false;
-      try {
-        if (navigator.clipboard?.writeText) {
-          await navigator.clipboard.writeText(path);
-          ok = true;
-        }
-      } catch {
-        ok = false;
-      }
-      // file:// 沙箱页可能没有安全上下文，clipboard API 会失败：退回 execCommand。
-      if (!ok) {
-        try {
-          const textarea = document.createElement("textarea");
-          textarea.value = path;
-          textarea.style.position = "fixed";
-          textarea.style.opacity = "0";
-          document.body.appendChild(textarea);
-          textarea.select();
-          ok = document.execCommand("copy");
-          document.body.removeChild(textarea);
-        } catch {
-          ok = false;
-        }
-      }
+      const ok = await copyText(path);
       if (copyTimer.current !== null) window.clearTimeout(copyTimer.current);
       if (ok) {
         setCopied(true);

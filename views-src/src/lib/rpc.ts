@@ -7,6 +7,7 @@
  */
 
 import type { ProjectWorkspace } from "./roots";
+import type { EditorKind } from "./editors";
 import type { T } from "../i18n";
 
 /**
@@ -351,6 +352,37 @@ export type WatchResponse = {
 /** 首次握手里的监听能力（视图据此决定开关是否可用）。 */
 export type WatchCapability = { available: boolean };
 
+/**
+ * 「通过…打开」的编辑器候选（0.9.0）。
+ *
+ * 主进程探测这台机器上真实存在的编辑器（注册表 App Paths / StartMenuInternet、
+ * PATH、少数固定安装位置），按**日期**缓存一天并落盘，多个实例共享同一次探测。
+ * 视图只拿到 id、显示名与种类：可执行文件路径留在主进程，视图指定不了要跑什么。
+ * kind 由主进程标注（它才知道 Chrome 是浏览器），视图据此决定适用面。
+ */
+export type EditorOption = {
+  id: string;
+  label: string;
+  kind: EditorKind;
+};
+
+export type EditorsResponse = {
+  ok: true;
+  /** win32 / darwin / linux：视图据此在文案里说「用默认应用」还是「用…打开」。 */
+  platform: string;
+  /** 这份探测结果属于哪一天（YYYY-MM-DD）。 */
+  stamp: string;
+  editors: EditorOption[];
+} | Failure;
+
+export type OpenWithRequest = {
+  path: string;
+  /** 编辑器 id，必须来自 fm.editors 的返回。 */
+  id: string;
+};
+
+export type OpenWithResponse = { ok: true; editor: EditorOption } | Failure;
+
 export type ReadRequest = {
   path: string;
   /**
@@ -393,8 +425,9 @@ export const channels = {
   sqliteQuery: "fm.sqlite.query",
   gitDiff: "fm.git.diff",
   watch: "fm.watch",
+  editors: "fm.editors",
+  openWith: "fm.openWith",
 } as const;
-
 /** 把失败响应统一成人话，供 UI 直接展示。 */
 export function failureMessage(failure: Failure, t: T): string {
   switch (failure.code) {

@@ -2,16 +2,18 @@ import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { invoke } from "./lib/bridge";
 import { watchAppearance, type Base, type Locale as HostLocale } from "./lib/appearance";
 import { watchWorkspace, workspaceKey, type Workspace } from "./lib/workspace";
-import { channels, failureMessage, isConflict, type DeleteResponse, type Failure, type FileEntry, type GitDiffResponse, type GitSummary, type HelloResponse, type ListResponse, type Prefs, type PrefsResponse, type ReadRequest, type ReadResponse, type SearchHit, type SearchResponse, type WatchResponse, type WriteRequest, type WriteResponse } from "./lib/rpc";
+import { channels, failureMessage, isConflict, type DeleteResponse, type EditorOption, type EditorsResponse, type Failure, type FileEntry, type GitDiffResponse, type GitSummary, type HelloResponse, type ListResponse, type Prefs, type PrefsResponse, type ReadRequest, type ReadResponse, type SearchHit, type SearchResponse, type WatchResponse, type WriteRequest, type WriteResponse } from "./lib/rpc";
 import { gitSummaryText, lookupGit } from "./lib/git";
 import { decideWatchAction } from "./lib/watch";
 import { baseNameOf, parentOf } from "./lib/format";
-import { findRootForPath, hostActionPath, normalizeRoots, primaryRootOf, projectKeyOf, rememberProjectRoot, resolveSelectedRoot, samePath, type WorkspaceRoot } from "./lib/roots";
+import { absoluteFullPath, findRootForPath, hostActionPath, normalizeRoots, primaryRootOf, projectKeyOf, rememberProjectRoot, resolveSelectedRoot, samePath, type WorkspaceRoot } from "./lib/roots";
 
 import { makeT, type T } from "./i18n";
 import { resolveViewer, type ViewerMode } from "./lib/viewers";
 import { toOpenFile, withSavedContent, type OpenFile } from "./lib/openFile";
-import { openWithDefaultApp, revealInFileManager } from "./lib/hostActions";
+import { openWithDefaultApp, openWithEditor, revealInFileManager } from "./lib/hostActions";
+import { editorsFor } from "./lib/editors";
+import { copyText } from "./lib/clipboard";
 import { isExternalPath, watchHostOpenRequests, type HostOpenRequest } from "./lib/hostOpen";
 import type { DiffViewState } from "./components/GitDiffView";
 import { Tree, type DirState } from "./components/Tree";
@@ -107,6 +109,12 @@ export default function App() {
    * 主根是谁就判断不了「相对路径其实指主根」，也不知道基点该不该切。
    */
   const [ready, setReady] = useState(false);
+  /**
+   * 「通过…打开」的编辑器候选（0.9.0）。主进程按天缓存探测结果，所以这里可以
+   * 放心在挂载时问一次就够——同一台机器同一天不会重新探测。
+   * null = 还没问到（菜单里先只摆「系统默认应用」，问到之后自然就有二级）
+   */
+  const [editors, setEditors] = useState<EditorOption[] | null>(null);
 
   const handleRef = useRef<EditorHandle | null>(null);
   const dirsRef = useRef(directories);
@@ -324,6 +332,24 @@ export default function App() {
       applyRef.current(first);
       readyRef.current = true;
       setReady(true);
+    })();
+  }, []);
+
+  /**
+   * 编辑器探测（0.9.0）：「通过…打开」的候选。
+   *
+   * 与 hello 分开跑，就是为了不让注册表探测挡住首选渲染——探测冷启要几百毫秒，
+   * 而面板得先能看、先能点。主进程按天缓存并落盘（多开共享同一次探测），所以这个
+   * effect 只会在挂载时问一次；拿不到就保持 null，二级菜单里只剩「系统默认应用」。
+   */
+  useEffect(() => {
+    void (async () => {
+      try {
+        const response = await invoke<EditorsResponse>(channels.editors);
+        if (response?.ok) setEditors(response.editors);
+      } catch {
+        /* 探测不可用只是少一层菜单 */
+      }
     })();
   }, []);
 
@@ -996,6 +1022,69 @@ export default function App() {
     });
   }, []);
 
+  /**
+   * 复制一段路径到剪贴板。成功与失败都给 toast：这是「点了应该有反应」的动作，
+   * 静默失败会让人以为系统剪贴板坏了。文案里带上复制的内容，方便自证。
+   */
+  const copyPath = useCallback(async (value: string) => {
+    const ok = await copyText(value);
+    void invoke("ui.showToast", {
+      message: ok
+        ? tRef.current("pathCopied", { path: value })
+        : tRef.current("copyFailed"),
+    }).catch(() => {});
+  }, []);
+
+  /**
+   * 「通过…打开」：路径与编辑器 id 一起交给插件主进程，它按同一套根内包含与凭据
+   * 黑名单解析路径，并且只认自己探测出来的编辑器 id。
+   */
+  const runOpenWith = useCallback((path: string, id: string) => {
+    void openWithEditor(path, id).catch(() => {
+      void invoke("ui.showToast", { message: tRef.current("openWithFailed") }).catch(() => {});
+    });
+  }, []);
+
+  /**
+   * 「通过…打开」二级菜单的内容。
+   *
+   * 第一项固定是系统默认应用（走宿主的 fs.openDefault）；后面是主进程探测到的程序，
+   * **按条目过滤**（lib/editors.ts）：编辑器什么都能打开，浏览器只对网页类文件出现——
+   * 拿 Chrome 打开 App.tsx 只会看到一个纯文本加载页，那是把噪音摆进菜单。
+   *
+   * 过滤后一个都不剩（例如 .ts 文件上只装了浏览器）时只留默认应用那一项，不摆点了
+   * 没反应的条目。目录允许交给编辑器（编辑器自己决定是打开目录还是文件），但
+   * 「系统默认应用」那条因为宿主只接受文件而对目录禁用。
+   */
+  const openWithEntries = (target: FileEntry | null): MenuEntry[] => {
+    if (!target) {
+      return [{ kind: "item", label: t("openWithEmpty"), disabled: true, onPick: () => {} }];
+    }
+    const absolute = absoluteFullPath(target.path, activeRootRef.current);
+    const items: MenuEntry[] = [
+      {
+        kind: "item",
+        label: t("openWithDefault"),
+        disabled: target.isDirectory,
+        onPick: () => runHostAction("open", hostActionPath(target.path, activeRootRef.current)),
+      },
+    ];
+    const applicable = editorsFor(editors, target);
+    for (const editor of applicable) {
+      items.push({
+        kind: "item",
+        label: editor.label,
+        onPick: () => runOpenWith(absolute, editor.id),
+      });
+    }
+    // 探到一个程序都没有 vs 探到了但对这个文件不适用：前者值得说一句「没找到」，
+    // 后者只是这个文件没有额外选项，默认应用已经够用，不再多摆一行。
+    if ((editors ?? []).length === 0) {
+      items.push({ kind: "item", label: t("openWithEmpty"), disabled: true, onPick: () => {} });
+    }
+    return items;
+  };
+
   // 结构化视图（Markdown 预览 / 表格 / 树）只对文本文件成立；具体有哪几种、
   // 默认落在哪一侧，全部由 lib/viewers.ts 一处判定，偏好决定默认值。
   const viewer = openFile && openFile.kind === "text" ? resolveViewer(openFile.path, prefs) : null;
@@ -1055,9 +1144,33 @@ export default function App() {
         },
       },
       { kind: "separator" },
+      {
+        kind: "item",
+        label: t("copyRelativePath"),
+        disabled: !target,
+        onPick: () => {
+          if (target) void copyPath(target.path);
+        },
+      },
+      {
+        kind: "item",
+        label: t("copyAbsolutePath"),
+        disabled: !target,
+        onPick: () => {
+          if (target) void copyPath(absoluteFullPath(target.path, activeRootRef.current));
+        },
+      },
+      {
+        kind: "submenu",
+        id: "openWith",
+        label: t("openWithSubmenu"),
+        items: openWithEntries(target),
+      },
+      { kind: "separator" },
     ];
 
     if (target && !isDir) {
+      // 变更（0.7.0）：只在「这个文件真的有变更」时给入口，没有变更就不摆一个
       // 变更（0.7.0）：只在「这个文件真的有变更」时给入口，没有变更就不摆一个
       // 点了只会说「没有变更」的死按钮。没展开的目录走 lookupGit 往上找祖先汇总。
       if (target.git) {

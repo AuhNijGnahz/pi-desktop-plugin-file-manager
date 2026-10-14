@@ -195,6 +195,18 @@ export function absolutePathOf(entryPath: string, root: WorkspaceRoot | null): s
   return joinAbsolute(root.path, entryPath);
 }
 
+/**
+ * 条目路径 → **始终是绝对路径**的形态，供「复制绝对路径」与「通过…打开」使用。
+ *
+ * 与 absolutePathOf 的区别只有一点：基点就是主根时后者按原样返回相对路径（宿主与
+ * 基点解析都把它当工作区相对路径用，那是对的），而这里要的是用户能直接贴到别处的
+ * 绝对路径，所以任何情况下都拼上 root.path。rel 为空（root 本身）时就是 root 路径。
+ */
+export function absoluteFullPath(entryPath: string, root: WorkspaceRoot | null): string {
+  if (!root) return entryPath;
+  return joinAbsolute(root.path, entryPath);
+}
+
 /** 两个路径片段拼成绝对路径；分隔符跟着 base 走（Windows 上仍是 `\`）。 */
 function joinAbsolute(base: string, rel: string): string {
   const trimmedBase = base.replace(/[\\/]+$/, "");

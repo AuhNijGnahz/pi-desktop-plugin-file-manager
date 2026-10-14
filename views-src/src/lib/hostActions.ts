@@ -32,3 +32,16 @@ export function openWithDefaultApp(path: string): Promise<void> {
 export function revealInFileManager(path: string): Promise<void> {
   return runHostAction("fs.reveal", path);
 }
+
+/**
+ * 「通过…打开」不走宿主网关，而是本插件主进程的 fm.openWith：宿主只给了
+ * 「用默认应用打开」这一个入口，没有「用某个指定程序打开」的通道，而插件进程
+ * 本来就能 spawn（git 联动已经在用）。路径由主进程按同一套根内包含与凭据黑名单
+ * 解析，编辑器则只认 fm.editors 探测出来的 id——视图递不了可执行文件。
+ */
+export async function openWithEditor(path: string, id: string): Promise<void> {
+  const response = await invoke<HostResponse>("fm.openWith", { path, id });
+  if (response && response.ok === false) {
+    throw new Error(response.message ?? "the plugin refused the request");
+  }
+}
