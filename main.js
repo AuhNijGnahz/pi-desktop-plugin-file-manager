@@ -3326,6 +3326,8 @@ async function handleHello() {
     // 这个运行时能不能监听：不能的话视图把「自动刷新」开关显示成不可用，
     // 而不是让用户开了却永远没反应。
     watch: { available: watchSupported && fsWatchFn() !== null },
+    // Older hosts may load this plugin before the built-in Browser action API exists.
+    capabilities: { openHtmlInBrowser: typeof pi.fs.openInBrowser === "function" },
     prefs,
   };
 }

@@ -70,7 +70,7 @@ async function main() {
       },
     },
     ui: { showToast: () => {} },
-    fs: {},
+    fs: { openInBrowser: async () => {} },
   };
 
   const { onLoad, onPanelInvoke } = require(pluginMain);
@@ -79,8 +79,13 @@ async function main() {
   console.log("1. 初始基点 = 主根");
   const hello = await onPanelInvoke("fm.hello", {});
   check("hello 报的是主根（工作区）", hello.root.path === alpha, hello.root.path);
+  check("hello 暴露内置 Browser 能力", hello.capabilities?.openHtmlInBrowser === true);
   check("hello 带上了组里的全部文件夹", hello.root.roots?.length === 2);
   check("主根带 primary 标记", hello.root.roots?.[0]?.primary === true);
+  delete globalThis.pi.fs.openInBrowser;
+  const legacyHello = await onPanelInvoke("fm.hello", {});
+  check("旧宿主不暴露内置 Browser 能力", legacyHello.capabilities?.openHtmlInBrowser === false);
+  globalThis.pi.fs.openInBrowser = async () => {};
   const alphaListing = await onPanelInvoke("fm.list", { path: "" });
   check(
     "主根列出自己的文件",

@@ -156,6 +156,7 @@ export type HelloResponse = {
   ignoreFiles: string[];
   /** 监听能力：不能监听时视图不给一个永远没反应的开关。 */
   watch: WatchCapability;
+  capabilities?: { openHtmlInBrowser?: boolean };
   prefs: Prefs;
 };
 
