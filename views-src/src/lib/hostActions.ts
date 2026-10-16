@@ -1,13 +1,14 @@
 /**
- * 由宿主代为执行的两个动作：用默认应用打开、在文件夹中显示。
+ * 由宿主代为执行的文件动作：用默认应用打开、在文件夹中显示、在内置 Browser 中预览 HTML。
  *
  * 和插件自己的读写不同，这两个**必须**走宿主网关：只有宿主进程能调起系统程序，
  * 也只有它能拿到真实路径。因此 manifest 里声明了 `fs.read`（root workspace、
  * scope `**`）——与内置 Files 视图逐项相同——这两个通道会按声明的范围校验，
  * 越界会被宿主自己拒掉。
  *
- * 契约（见宿主 plugin-runtime.ts）：参数是**工作区相对路径**，且**只接受文件**，
- * 目录会返回 INVALID_ARGUMENT，所以调用方要对目录禁用这两个动作。
+ * 契约（见宿主 plugin-runtime.ts）：参数通常是工作区相对路径；项目组的兄弟文件夹
+ * 可传其已注册 root 内的绝对路径。宿主只接受通过 fs.read 检查的文件，目录会返回
+ * INVALID_ARGUMENT，所以调用方要对目录禁用这些动作。
  */
 
 import { invoke } from "./bridge";
@@ -27,6 +28,10 @@ async function runHostAction(channel: string, path: string): Promise<void> {
 
 export function openWithDefaultApp(path: string): Promise<void> {
   return runHostAction("fs.openDefault", path);
+}
+
+export function openInBuiltInBrowser(path: string): Promise<void> {
+  return runHostAction("fs.openInBrowser", path);
 }
 
 export function revealInFileManager(path: string): Promise<void> {

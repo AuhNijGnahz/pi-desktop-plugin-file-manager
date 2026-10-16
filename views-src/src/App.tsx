@@ -11,8 +11,9 @@ import { absoluteFullPath, findRootForPath, hostActionPath, normalizeRoots, prim
 import { makeT, type T } from "./i18n";
 import { resolveViewer, type ViewerMode } from "./lib/viewers";
 import { toOpenFile, withSavedContent, type OpenFile } from "./lib/openFile";
-import { openWithDefaultApp, openWithEditor, revealInFileManager } from "./lib/hostActions";
+import { openInBuiltInBrowser, openWithDefaultApp, openWithEditor, revealInFileManager } from "./lib/hostActions";
 import { editorsFor } from "./lib/editors";
+import { buildFileContextMenuEntries, withBuiltInBrowserEntry } from "./lib/file-context-menu";
 import { copyText } from "./lib/clipboard";
 import { isExternalPath, watchHostOpenRequests, type HostOpenRequest } from "./lib/hostOpen";
 import type { DiffViewState } from "./components/GitDiffView";
@@ -87,6 +88,7 @@ export default function App() {
   const [diff, setDiff] = useState<(DiffViewState & { path: string }) | null>(null);
   /** 这个运行时能不能监听（0.8.0）；不能就把「自动刷新」开关显示成不可用。 */
   const [watchAvailable, setWatchAvailable] = useState(true);
+  const [openHtmlInBrowserAvailable, setOpenHtmlInBrowserAvailable] = useState(false);
   /**
    * 打开的文件在外部被改了、而缓冲里还有未保存的改动。
    * 这时**不自动装载**——静默丢掉用户刚敲的字是最糟的一种「自动」；只提示一句，
@@ -317,6 +319,7 @@ export default function App() {
           // 监听不可用（老平台 / 运行时不给 fs.watch）时，开关显示成不可用，
           // 而不是让用户开了却永远没反应。
           if (hello.watch) setWatchAvailable(hello.watch.available);
+          setOpenHtmlInBrowserAvailable(hello.capabilities?.openHtmlInBrowser === true);
           workspace = hello.root;
         }
       } catch {
@@ -1010,15 +1013,20 @@ export default function App() {
   );
 
   /**
-   * 「用默认应用打开」与「在文件夹中显示」由宿主代为执行（fs.openDefault / fs.reveal），
-   * 受 manifest 里声明的 fs.read 范围约束，且只对文件有效。
-   * 失败走 toast 而不是插件的错误横幅——这两件事与当前打开的文件无关。
+   * 默认应用、内置 Browser 与文件夹显示由宿主执行，受 manifest.fs.read 范围约束。
+   * 失败走 toast 而不是插件的错误横幅——这些动作与当前打开的文件无关。
    */
-  const runHostAction = useCallback((action: "open" | "reveal", path: string) => {
-    const run = action === "open" ? openWithDefaultApp : revealInFileManager;
+  const runHostAction = useCallback((action: "open" | "browser" | "reveal", path: string) => {
+    const run = action === "open"
+      ? openWithDefaultApp
+      : action === "browser"
+        ? openInBuiltInBrowser
+        : revealInFileManager;
     void run(path).catch(() => {
       void invoke("ui.showToast", {
-        message: tRef.current(action === "open" ? "openError" : "revealError"),
+        message: tRef.current(
+          action === "open" ? "openError" : action === "browser" ? "openInBuiltInBrowserError" : "revealError",
+        ),
       }).catch(() => {});
     });
   }, []);
@@ -1049,13 +1057,14 @@ export default function App() {
   /**
    * 「通过…打开」二级菜单的内容。
    *
-   * 第一项固定是系统默认应用（走宿主的 fs.openDefault）；后面是主进程探测到的程序，
-   * **按条目过滤**（lib/editors.ts）：编辑器什么都能打开，浏览器只对网页类文件出现——
+   * HTML、HTM、XHTML 且宿主支持时，内置 Browser 项排在最前并与外部程序分隔；
+   * 后面固定是系统默认应用（走宿主的 fs.openDefault）和主进程探测到的程序，按
+   * 条目过滤（lib/editors.ts）：编辑器什么都能打开，外部浏览器只对网页文件出现。
    * 拿 Chrome 打开 App.tsx 只会看到一个纯文本加载页，那是把噪音摆进菜单。
    *
    * 过滤后一个都不剩（例如 .ts 文件上只装了浏览器）时只留默认应用那一项，不摆点了
    * 没反应的条目。目录允许交给编辑器（编辑器自己决定是打开目录还是文件），但
-   * 「系统默认应用」那条因为宿主只接受文件而对目录禁用。
+   * 内置 Browser 与「系统默认应用」都只接受文件。
    */
   const openWithEntries = (target: FileEntry | null): MenuEntry[] => {
     if (!target) {
@@ -1083,7 +1092,13 @@ export default function App() {
     if ((editors ?? []).length === 0) {
       items.push({ kind: "item", label: t("openWithEmpty"), disabled: true, onPick: () => {} });
     }
-    return items;
+    return withBuiltInBrowserEntry(
+      target,
+      openHtmlInBrowserAvailable,
+      t("openInBuiltInBrowser"),
+      items,
+      (entry) => runHostAction("browser", hostActionPath(entry.path, activeRootRef.current)),
+    );
   };
 
   // 结构化视图（Markdown 预览 / 表格 / 树）只对文本文件成立；具体有哪几种、
@@ -1105,99 +1120,47 @@ export default function App() {
 
   const menuEntries = (): MenuEntry[] => {
     const target = menu?.entry ?? null;
-    const isDir = Boolean(target?.isDirectory);
-    const dirPath = target ? (isDir ? target.path : parentOf(target.path)) : "";
-
-    const entries: MenuEntry[] = [
-      {
-        kind: "item",
-        label: t("newFile"),
-        onPick: () => setPrompt({ kind: "newFile", parent: dirPath }),
+    return buildFileContextMenuEntries({
+      target,
+      labels: {
+        newFile: t("newFile"),
+        newFolder: t("newFolder"),
+        rename: t("rename"),
+        move: t("move"),
+        delete: t("delete"),
+        copyRelativePath: t("copyRelativePath"),
+        copyAbsolutePath: t("copyAbsolutePath"),
+        openWithSubmenu: t("openWithSubmenu"),
+        viewChanges: t("viewChanges"),
+        revealInFolder: t("revealInFolder"),
+        refresh: t("refresh"),
       },
-      {
-        kind: "item",
-        label: t("newFolder"),
-        onPick: () => setPrompt({ kind: "newFolder", parent: dirPath }),
+      openWithEntries: target ? openWithEntries(target) : [],
+      onNewFile: (parent) => setPrompt({ kind: "newFile", parent }),
+      onNewFolder: (parent) => setPrompt({ kind: "newFolder", parent }),
+      onRename: (entry) => setPrompt({ kind: "rename", entry }),
+      onMove: (entry) => setPrompt({ kind: "move", entry }),
+      onDelete: (entry) => {
+        setSelected(entry.path);
+        setConfirmDelete({ entry });
       },
-      { kind: "separator" },
-      {
-        kind: "item",
-        label: t("rename"),
-        disabled: !target,
-        onPick: () => target && setPrompt({ kind: "rename", entry: target }),
-      },
-      {
-        kind: "item",
-        label: t("move"),
-        disabled: !target,
-        onPick: () => target && setPrompt({ kind: "move", entry: target }),
-      },
-      {
-        kind: "item",
-        label: t("delete"),
-        disabled: !target,
-        danger: true,
-        onPick: () => {
-          // target 由 disabled 守着，这里一定有；选中态先落，确认框关掉后树里好高亮。
-          if (!target) return;
-          setSelected(target.path);
-          setConfirmDelete({ entry: target });
-        },
-      },
-      { kind: "separator" },
-      {
-        kind: "item",
-        label: t("copyRelativePath"),
-        disabled: !target,
-        onPick: () => {
-          if (target) void copyPath(target.path);
-        },
-      },
-      {
-        kind: "item",
-        label: t("copyAbsolutePath"),
-        disabled: !target,
-        onPick: () => {
-          if (target) void copyPath(absoluteFullPath(target.path, activeRootRef.current));
-        },
-      },
-      {
-        kind: "submenu",
-        id: "openWith",
-        label: t("openWithSubmenu"),
-        items: openWithEntries(target),
-      },
-      { kind: "separator" },
-    ];
-
-    if (target && !isDir) {
-      // 变更（0.7.0）：只在「这个文件真的有变更」时给入口，没有变更就不摆一个
-      // 变更（0.7.0）：只在「这个文件真的有变更」时给入口，没有变更就不摆一个
-      // 点了只会说「没有变更」的死按钮。没展开的目录走 lookupGit 往上找祖先汇总。
-      if (target.git) {
-        entries.push({
-          kind: "item",
-          label: t("viewChanges"),
-          onPick: () => {
-            setMenu(null);
-            // 变更视图占的是编辑器那一块：先把这个文件打开（必要时经过未保存守卫），
-            // 守卫取消就什么都不做。
-            withGuard(() => {
-              const show = () => openDiff(target.path);
-              if (openPathRef.current === target.path) show();
-              else void openEntry({ path: target.path }).then(show);
-            });
-          },
+      onCopyRelativePath: (entry) => void copyPath(entry.path),
+      onCopyAbsolutePath: (entry) =>
+        void copyPath(absoluteFullPath(entry.path, activeRootRef.current)),
+      onViewChanges: (entry) => {
+        setMenu(null);
+        // 变更视图占的是编辑器那一块：先把这个文件打开（必要时经过未保存守卫），
+        // 守卫取消就什么都不做。
+        withGuard(() => {
+          const show = () => openDiff(entry.path);
+          if (openPathRef.current === entry.path) show();
+          else void openEntry({ path: entry.path }).then(show);
         });
-      }
-      // 交给宿主执行（fs.reveal），受 manifest 里声明的 fs.read 范围约束，且只对文件有效。
-      entries.push({
-        kind: "item",
-        label: t("revealInFolder"),
-        onPick: () => runHostAction("reveal", hostActionPath(target.path, activeRootRef.current)),
-      });
-    }
-    return entries;
+      },
+      onRevealInFolder: (entry) =>
+        runHostAction("reveal", hostActionPath(entry.path, activeRootRef.current)),
+      onRefresh: (directory) => void loadDirectory(directory, true),
+    });
   };
 
   // ── 渲染 ─────────────────────────────────────────────────────────────────
