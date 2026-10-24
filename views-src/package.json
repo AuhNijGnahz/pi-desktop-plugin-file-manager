@@ -18,7 +18,8 @@
     "verify:watch": "node verify-watch.mjs",
     "verify:pdf": "node verify-pdf.mjs",
     "verify:menu": "node verify-context-menu.mjs",
-    "verify": "node verify-roots.mjs && node verify-jail.mjs && node verify-highlight.mjs && node verify-markdown.mjs && node verify-viewers.mjs && node verify-editors.mjs && node verify-git.mjs && node verify-watch.mjs && node verify-pdf.mjs && node verify-context-menu.mjs"
+    "verify:theme": "node verify-theme.mjs",
+    "verify": "node verify-roots.mjs && node verify-jail.mjs && node verify-highlight.mjs && node verify-markdown.mjs && node verify-viewers.mjs && node verify-editors.mjs && node verify-git.mjs && node verify-watch.mjs && node verify-pdf.mjs && node verify-context-menu.mjs && node verify-theme.mjs"
   },
   "dependencies": {
     "@codemirror/autocomplete": "^6.18.4",
