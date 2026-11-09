@@ -190,6 +190,33 @@ input:focus-visible {
   border-bottom: none;
 }
 
+/* 查找 / 替换面板，以及 CodeMirror 自己的对话框（Mod-Alt-g 的「跳转到行」）：
+   两者都用 .cm-textfield / .cm-button，而编辑器没有打开 CodeMirror 的 dark 主题，
+   基础主题的 &light 分支会把输入框刷成白底、按钮刷成浅色渐变，文字却继承
+   .cm-panels 的 var(--fg)——暗色外观下就是白底白字。这里按插件调色板显式覆盖。 */
+.cm-editor .cm-panel:is(.cm-search, .cm-dialog) .cm-textfield {
+  border: 1px solid var(--border-strong);
+  border-radius: 3px;
+  background: var(--surface);
+  color: var(--fg);
+  caret-color: var(--fg);
+}
+
+.cm-editor .cm-panel:is(.cm-search, .cm-dialog) .cm-textfield::placeholder {
+  color: var(--muted);
+}
+
+.cm-editor .cm-panel:is(.cm-search, .cm-dialog) .cm-button {
+  border: 1px solid var(--border-strong);
+  border-radius: 3px;
+  background: var(--surface-hover);
+  color: var(--fg);
+}
+
+.cm-editor .cm-panel:is(.cm-search, .cm-dialog) .cm-button:hover:not(:disabled) {
+  background: var(--surface-active);
+}
+
 .cm-editor .cm-searchMatch {
   background: color-mix(in oklab, #f5c542 40%, transparent);
 }

@@ -2,6 +2,11 @@
 
 ## Unreleased
 
+- The editor's find / replace panel and the "Go to line" dialog (Ctrl/Cmd+Alt+G)
+  follow the plugin palette: fields, placeholders, carets and buttons stay
+  readable in dark and light appearances instead of falling back to CodeMirror's
+  white light-theme defaults. `pnpm verify` now checks the rule in the source CSS
+  and in the shipped `views/assets/index.js`.
 - Fix SSH workspaces remaining on Loading: remote directories and text/image
   previews now use the paired Host's scoped SDK reads, with explicit read-only
   controls, upgrade/errors and retry. Local file operations never receive an
