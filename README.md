@@ -25,12 +25,13 @@ companion Desktop branch. It does not connect to user SSH servers or profiles.
 
 ### Paired release for #1711
 
-Version 0.9.1 keeps this repair distinct from the existing v0.9.0 tag.
-Delivery through the companion
-[Desktop PR #1824](https://github.com/vastsa/PI-Desktop/pull/1824) requires a
-plugin release and a bundled update. Tag the accepted plugin commit and
-publish the same runtime bytes to the marketplace; preserve the existing
-v0.9.0 tag.
+Version 0.9.1 keeps this repair distinct from the existing v0.9.0 tag. The
+companion [Desktop PR #1824](https://github.com/vastsa/PI-Desktop/pull/1824)
+merged on 2026-10-27 as `467bc517` and adopted this source as the bundled
+hotfix `0.9.1-pi.1`, so the Desktop repair no longer depends on this repository
+being released. Merging and publishing this branch is a source-synchronisation
+step for the maintainer: tag the accepted commit and publish the same runtime
+bytes to the marketplace, preserving the existing v0.9.0 tag.
 
 Prepare the runtime with `node scripts/prepare-package.mjs`, then run the
 official `pi-plugin check dist/runtime` and `pi-plugin pack dist/runtime`.
@@ -39,7 +40,7 @@ The runtime includes `remote-workspace.js` and
 built view, README and changelog; omitting either new runtime file makes the
 vendored update incomplete.
 
-After publication, Desktop must copy the released runtime, preserve its local
+If this repository publishes a release later, Desktop must copy that runtime, preserve its local
 MIT license and CommonJS marker, and update `UPSTREAM.md` and the bundled
 provenance tests using the real tag, commit, marketplace artifact checksum
 and per-file checksums. Run the cross-repository Electron journey against
