@@ -19,8 +19,14 @@ globalThis.pi = {
   fs: {
     list: async (path, options) => {
       requests.push({ operation: "list", path, options });
-      return path === "" ? [{ name: "src", path: "src", isDirectory: true }]
-        : [{ name: "a.md", path: "src/a.md", isDirectory: false, size: 15, mtimeMs: 1234 }];
+      return path === "" ? [
+        { name: ".env", path: ".env", isDirectory: false, size: 12, mtimeMs: 1234 },
+        { name: "server.pem", path: "server.pem", isDirectory: false, size: 40, mtimeMs: 1234 },
+        { name: "src", path: "src", isDirectory: true },
+      ] : [
+        { name: "a.md", path: "src/a.md", isDirectory: false, size: 15, mtimeMs: 1234 },
+        { name: ".env.local", path: "src/.env.local", isDirectory: false, size: 9, mtimeMs: 1234 },
+      ];
     },
     readPreview: async (path, options) => {
       requests.push({ operation: "preview", path, options });
@@ -42,7 +48,8 @@ try {
   assert.equal(root.ok, true, JSON.stringify(root));
   assert.deepEqual(root.entries.map(entry => entry.name), ["src"]);
   const nested = await plugin.onPanelInvoke("fm.list", { path: "src", workspacePath: remote.path });
-  assert.equal(nested.entries[0].path, "src/a.md");
+  // 凭据类条目与本地列目录一样连名字都不出现（Host 只跳过 .git / node_modules 这类目录）。
+  assert.deepEqual(nested.entries.map(entry => entry.name), ["a.md"]);
   const text = await plugin.onPanelInvoke("fm.read", { path: "src/a.md", workspacePath: remote.path });
   assert.equal(text.text, "REMOTE CONTENT\n"); assert.equal(text.readOnly, true); assert.equal(text.mtimeMs, 1234);
   const image = await plugin.onPanelInvoke("fm.read", { path: "image.png", workspacePath: remote.path });
