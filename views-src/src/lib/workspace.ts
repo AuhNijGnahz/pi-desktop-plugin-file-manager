@@ -24,7 +24,7 @@ export function getWorkspace(): Promise<Workspace | null> {
 export function workspaceKey(workspace: Workspace | null): string | null {
   if (!workspace) return null;
   const roots = normalizeRoots(workspace).map((root) => root.path);
-  return [projectKeyOf(workspace), ...roots].join("\u0000");
+  return [projectKeyOf(workspace), ...roots, workspace.remote?.path ?? ""].join("\u0000");
 }
 
 export function watchWorkspace(onChange: (workspace: Workspace | null) => void): () => void {

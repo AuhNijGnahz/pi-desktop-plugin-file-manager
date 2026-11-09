@@ -259,7 +259,7 @@ export type SqliteRead = {
   info: SqliteInfo;
 };
 
-export type ReadResponse = TextRead | DataRead | TooLargeRead | BinaryRead | SqliteRead;
+export type ReadResponse = (TextRead | DataRead | TooLargeRead | BinaryRead | SqliteRead) & { readOnly?: boolean };
 
 export type SqliteOpenResponse = {
   ok: true;
@@ -432,6 +432,15 @@ export const channels = {
 /** 把失败响应统一成人话，供 UI 直接展示。 */
 export function failureMessage(failure: Failure, t: T): string {
   switch (failure.code) {
+    case "REMOTE_READ_ONLY":
+      return t("remoteReadOnly");
+    case "REMOTE_UNSUPPORTED":
+    case "HOST_VERSION_MISMATCH":
+      return t("remoteUpgrade");
+    case "WORKSPACE_CHANGED":
+      return t("workspaceChanged");
+    case "REMOTE_PATH_FORBIDDEN":
+      return t("errDenied");
     case "NO_WORKSPACE":
       return t("noWorkspace");
     case "DENIED_PATH":

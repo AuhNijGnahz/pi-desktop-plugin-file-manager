@@ -44,6 +44,7 @@ export type FileContextMenuLabels = {
 };
 
 export type FileContextMenuOptions<T extends FileContextMenuTarget> = {
+  readOnly?: boolean;
   target: T | null;
   labels: FileContextMenuLabels;
   openWithEntries: MenuEntry[];
@@ -71,7 +72,7 @@ export function buildFileContextMenuEntries<T extends FileContextMenuTarget>(
   const parent = target ? (isDirectory ? target.path : parentOf(target.path)) : "";
   const sections: MenuEntry[][] = [];
 
-  if (target) {
+  if (target && !options.readOnly) {
     sections.push([
       {
         kind: "submenu",
@@ -82,7 +83,7 @@ export function buildFileContextMenuEntries<T extends FileContextMenuTarget>(
     ]);
   }
 
-  sections.push([
+  if (!options.readOnly) sections.push([
     {
       kind: "item",
       label: labels.newFile,
@@ -96,7 +97,7 @@ export function buildFileContextMenuEntries<T extends FileContextMenuTarget>(
   ]);
 
   if (target) {
-    sections.push([
+    if (!options.readOnly) sections.push([
       {
         kind: "item",
         label: labels.rename,
@@ -128,7 +129,7 @@ export function buildFileContextMenuEntries<T extends FileContextMenuTarget>(
       },
     ]);
 
-    if (!isDirectory) {
+    if (!isDirectory && !options.readOnly) {
       const fileActions: MenuEntry[] = [];
       if (target.git) {
         fileActions.push({

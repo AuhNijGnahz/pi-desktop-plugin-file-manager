@@ -41,11 +41,11 @@ function buildRows(
   t: T,
 ): Row[] {
   const state = directories.get(dirPath);
+  if (state?.error) {
+    return [{ kind: "note", path: dirPath, depth, text: state.error, error: true }];
+  }
   if (!state || !state.entries) {
     return [{ kind: "note", path: dirPath, depth, text: t("loading"), error: false }];
-  }
-  if (state.error) {
-    return [{ kind: "note", path: dirPath, depth, text: t("error"), error: true }];
   }
 
   const entries = showIgnored
@@ -151,7 +151,7 @@ export function Tree({
       ref={listRef}
       role="tree"
       aria-label={t("treeSection")}
-      aria-busy={!directories.get("")?.entries}
+      aria-busy={!directories.has("") || directories.get("")?.loading === true}
       className="min-h-0 flex-1 overflow-auto px-1.5 pb-4"
       onContextMenu={(event) => {
         // 空白处右键：不带条目，菜单只提供「在此新建」与刷新。

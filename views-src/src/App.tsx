@@ -64,6 +64,8 @@ export default function App() {
   const t: T = useMemo(() => makeT(hostLocale), [hostLocale]);
 
   const [root, setRoot] = useState<Workspace | null>(null);
+  const workspaceRef = useRef<Workspace | null>(null);
+  const remoteReadOnly = root?.path.startsWith("remote-project:") === true;
   const [directories, setDirectories] = useState<Map<string, DirState>>(new Map());
   const [expanded, setExpanded] = useState<Set<string>>(new Set());
   const [selected, setSelected] = useState<string | null>(null);
@@ -111,11 +113,7 @@ export default function App() {
    * 主根是谁就判断不了「相对路径其实指主根」，也不知道基点该不该切。
    */
   const [ready, setReady] = useState(false);
-  /**
-   * 「通过…打开」的编辑器候选（0.9.0）。主进程按天缓存探测结果，所以这里可以
-   * 放心在挂载时问一次就够——同一台机器同一天不会重新探测。
-   * null = 还没问到（菜单里先只摆「系统默认应用」，问到之后自然就有二级）
-   */
+  /** Local editor candidates are cached by the plugin and refreshed after workspace switches. */
   const [editors, setEditors] = useState<EditorOption[] | null>(null);
 
   const handleRef = useRef<EditorHandle | null>(null);
@@ -218,6 +216,7 @@ export default function App() {
    */
   const resetExplorer = useCallback(() => {
     revisionRef.current += 1;
+    openTokenRef.current += 1;
     setDirectories(new Map());
     setExpanded(new Set());
     setSelected(null);
@@ -244,6 +243,7 @@ export default function App() {
       const key = workspaceKey(workspace);
       if (key === appliedKeyRef.current) return;
       appliedKeyRef.current = key;
+      workspaceRef.current = workspace;
       setRoot(workspace);
       resetExplorer();
       if (workspace) void loadRef.current("", true);
@@ -316,10 +316,6 @@ export default function App() {
         const hello = await invoke<HelloResponse>(channels.hello);
         if (hello?.ok) {
           setPrefs(hello.prefs);
-          // 监听不可用（老平台 / 运行时不给 fs.watch）时，开关显示成不可用，
-          // 而不是让用户开了却永远没反应。
-          if (hello.watch) setWatchAvailable(hello.watch.available);
-          setOpenHtmlInBrowserAvailable(hello.capabilities?.openHtmlInBrowser === true);
           workspace = hello.root;
         }
       } catch {
@@ -338,23 +334,26 @@ export default function App() {
     })();
   }, []);
 
-  /**
-   * 编辑器探测（0.9.0）：「通过…打开」的候选。
-   *
-   * 与 hello 分开跑，就是为了不让注册表探测挡住首选渲染——探测冷启要几百毫秒，
-   * 而面板得先能看、先能点。主进程按天缓存并落盘（多开共享同一次探测），所以这个
-   * effect 只会在挂载时问一次；拿不到就保持 null，二级菜单里只剩「系统默认应用」。
-   */
+  /** Restore local capabilities after a remote startup; discard probes from an old workspace. */
   useEffect(() => {
-    void (async () => {
-      try {
-        const response = await invoke<EditorsResponse>(channels.editors);
-        if (response?.ok) setEditors(response.editors);
-      } catch {
-        /* 探测不可用只是少一层菜单 */
-      }
-    })();
-  }, []);
+    if (!ready) return;
+    let cancelled = false;
+    const key = workspaceKey(root);
+    const current = () => !cancelled && workspaceKey(workspaceRef.current) === key;
+    setEditors(null);
+    setWatchAvailable(false);
+    setOpenHtmlInBrowserAvailable(false);
+    if (!root || remoteReadOnly) return;
+    void invoke<HelloResponse>(channels.hello).then((response) => {
+      if (!current() || !response?.ok) return;
+      setWatchAvailable(response.watch?.available === true);
+      setOpenHtmlInBrowserAvailable(response.capabilities?.openHtmlInBrowser === true);
+    }).catch(() => { /* Optional host capabilities remain unavailable. */ });
+    void invoke<EditorsResponse>(channels.editors).then((response) => {
+      if (current() && response?.ok) setEditors(response.editors);
+    }).catch(() => { /* The default application remains available without detected editors. */ });
+    return () => { cancelled = true; };
+  }, [ready, root, remoteReadOnly]);
 
   // ready 之后才放行排队的宿主请求：这个 effect 在应用完项目组的那次渲染之后
   // 才跑，所以 applyHostOpen 读到的组、基点与偏好都是最新的。
@@ -382,7 +381,7 @@ export default function App() {
 
       setDir({ loading: true });
       try {
-        const response = await invoke<ListResponse | Failure>(channels.list, { path });
+        const response = await invoke<ListResponse | Failure>(channels.list, { path, workspacePath: workspaceRef.current?.path });
         if (revision !== revisionRef.current) return;
         if (!response.ok) {
           setDir({ error: failureMessage(response, t) });
@@ -420,11 +419,15 @@ export default function App() {
   );
 
   const refreshTree = useCallback(() => {
+    const revision = revisionRef.current;
     const open = [...expanded];
     setDirectories(new Map());
     void (async () => {
       await loadDirectory("", true);
-      for (const path of open) await loadDirectory(path, true);
+      for (const path of open) {
+        if (revision !== revisionRef.current) return;
+        await loadDirectory(path, true);
+      }
     })();
   }, [expanded, loadDirectory]);
 
@@ -490,7 +493,7 @@ export default function App() {
         const request: ReadRequest = external
           ? { path: entry.path, external: true }
           : { path: entry.path };
-        const response = await invoke<ReadResponse | Failure>(channels.read, request);
+        const response = await invoke<ReadResponse | Failure>(channels.read, { ...request, workspacePath: workspaceRef.current?.path });
         if (token !== openTokenRef.current) return;
         if (!response.ok) {
           setError(failureMessage(response, t));
@@ -565,7 +568,7 @@ export default function App() {
 
   // 有项目、开着这个偏好时才轮询；换项目/关掉偏好时计时器与游标一起归零。
   useEffect(() => {
-    if (!root || !prefs.watchFiles) return;
+    if (!root || remoteReadOnly || !prefs.watchFiles) return;
     let stopped = false;
     watchCursorRef.current = 0;
 
@@ -632,6 +635,7 @@ export default function App() {
     async (target: WorkspaceRoot): Promise<boolean> => {
       const workspace = rootRef.current;
       if (!workspace) return false;
+      const revision = revisionRef.current;
       const memory = rememberProjectRoot(
         prefsRef.current.projectRoots,
         projectKeyOf(workspace),
@@ -640,6 +644,7 @@ export default function App() {
       const response = await invoke<PrefsResponse>(channels.prefsSet, {
         partial: { projectRoots: memory },
       }).catch(() => null);
+      if (revision !== revisionRef.current) return false;
       if (!response || !response.ok) {
         setError(tRef.current("switchFailed"));
         return false;
@@ -699,6 +704,7 @@ export default function App() {
    */
   const applyHostOpen = useCallback(
     (request: HostOpenRequest) => {
+      const requestedWorkspace = workspaceKey(workspaceRef.current);
       const rawPath = request.path;
       const absolute = isExternalPath(rawPath);
       // 组的 root 列表还没到手时（ready 之前）这个请求会被排队，见下面 ready 的 effect。
@@ -709,6 +715,8 @@ export default function App() {
       persistPrefs({ treeCollapsed: true });
 
       const show = () => {
+        if (workspaceKey(workspaceRef.current) !== requestedWorkspace) return;
+        const revision = revisionRef.current;
         // 已经是这个文件：不重装文档，也就不必为脏缓冲再问一遍。
         if (relPath === openPathRef.current) return;
         // 组外的绝对路径不在树里：不展开、也不高亮（openEntry 会把选中态置空）。
@@ -721,7 +729,11 @@ export default function App() {
         setSelected(relPath);
         setExpanded((prev) => new Set([...prev, ...parents]));
         void (async () => {
-          for (const parent of parents) await loadDirectory(parent);
+          for (const parent of parents) {
+            if (revision !== revisionRef.current) return;
+            await loadDirectory(parent);
+          }
+          if (revision !== revisionRef.current) return;
           await openEntry({ path: relPath });
         })();
       };
@@ -745,7 +757,7 @@ export default function App() {
 
   const save = useCallback(
     async (override?: { mtimeMs: number; size: number }): Promise<boolean> => {
-      if (!openFile || openFile.kind !== "text") return false;
+      if (!openFile || openFile.kind !== "text" || openFile.readOnly) return false;
       // 没有改动就不写盘：Ctrl+S 是习惯动作，不该白抬一次 mtime、白记一行审计，
       // 更不该因为文件在别处被改过而弹出一个「冲突」。带 override 的是冲突框里的
       // 「覆盖」，那是显式意图，照写。
@@ -1121,6 +1133,7 @@ export default function App() {
   const menuEntries = (): MenuEntry[] => {
     const target = menu?.entry ?? null;
     return buildFileContextMenuEntries({
+      readOnly: remoteReadOnly,
       target,
       labels: {
         newFile: t("newFile"),
@@ -1146,7 +1159,8 @@ export default function App() {
       },
       onCopyRelativePath: (entry) => void copyPath(entry.path),
       onCopyAbsolutePath: (entry) =>
-        void copyPath(absoluteFullPath(entry.path, activeRootRef.current)),
+        void copyPath(absoluteFullPath(entry.path, root?.remote && activeRootRef.current
+          ? { ...activeRootRef.current, path: root.remote.path } : activeRootRef.current)),
       onViewChanges: (entry) => {
         setMenu(null);
         // 变更视图占的是编辑器那一块：先把这个文件打开（必要时经过未保存守卫），
@@ -1220,6 +1234,8 @@ export default function App() {
           )}
         </span>
 
+        {remoteReadOnly ? <span role="status" className="text-[10px]" style={{ color: "var(--muted)" }}>{t("remoteReadOnly")}</span> : null}
+
         <span className="ml-auto flex flex-none items-center gap-1">
           <IconButton label={t("refresh")} onClick={refreshTree}>
             <path d="M20 11a8 8 0 0 0-14.9-3.9L3 9" />
@@ -1230,6 +1246,7 @@ export default function App() {
           <IconButton
             label={prefs.showIgnored ? t("hideIgnored") : t("showIgnored")}
             active={prefs.showIgnored}
+            disabled={remoteReadOnly}
             onClick={() => persistPrefs({ showIgnored: !prefs.showIgnored })}
           >
             <path d="M2 12s3.6-7 10-7 10 7 10 7-3.6 7-10 7-10-7-10-7z" />
@@ -1247,7 +1264,7 @@ export default function App() {
                   : t("watchOff")
             }
             active={prefs.watchFiles && watchAvailable}
-            disabled={!watchAvailable}
+            disabled={remoteReadOnly || !watchAvailable}
             onClick={() => persistPrefs({ watchFiles: !prefs.watchFiles })}
           >
             <path d="M12 2v4" />
@@ -1272,6 +1289,8 @@ export default function App() {
                   </svg>
                   <input
                     value={query}
+                    disabled={remoteReadOnly}
+                    title={remoteReadOnly ? t("remoteReadOnly") : undefined}
                     onChange={(event) => setQuery(event.target.value)}
                     placeholder={t("searchPlaceholder")}
                     aria-label={t("search")}
@@ -1402,7 +1421,7 @@ export default function App() {
           dirty={dirty}
           saving={saving}
           error={error}
-          activeRoot={activeRoot}
+          activeRoot={root?.remote && activeRoot ? { ...activeRoot, path: root.remote.path } : activeRoot}
           git={openFileGit}
           viewer={viewer}
           tablePageSize={prefs.tablePageSize}

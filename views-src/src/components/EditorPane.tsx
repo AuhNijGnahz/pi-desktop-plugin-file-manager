@@ -163,7 +163,7 @@ export function EditorPane({
       return;
     }
     if (loadedToken === file.loadToken) return;
-    handleRef.current?.setDocument(file.text, file.path, file.kind !== "text");
+    handleRef.current?.setDocument(file.text, file.path, file.kind !== "text" || file.readOnly === true);
     setLoadedToken(file.loadToken);
   }, [file, loadedToken, handleRef]);
 
@@ -249,7 +249,7 @@ export function EditorPane({
             </span>
             {file.kind === "text" ? (
               <span className="flex-none text-[10px]" style={{ color: "var(--muted)" }}>
-                {dirty ? t("dirty") : saving ? t("saving") : t("saved")}
+                {file.readOnly ? t("readOnly") : dirty ? t("dirty") : saving ? t("saving") : t("saved")}
               </span>
             ) : null}
 
@@ -311,7 +311,7 @@ export function EditorPane({
             {file.kind !== "pdf" ? (
               <IconButton
                 label={t("save")}
-                disabled={!dirty || saving || file.kind !== "text"}
+                disabled={!dirty || saving || file.kind !== "text" || file.readOnly === true}
                 onClick={onSave}
                 d="M19 21H5a2 2 0 0 1-2-2V5a2 2 0 0 1 2-2h11l5 5v11a2 2 0 0 1-2 2zM17 21v-8H7v8M7 3v5h8"
               />

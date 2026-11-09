@@ -5,7 +5,7 @@ import { fileURLToPath } from "node:url";
 const root = fileURLToPath(new URL("../", import.meta.url));
 const distribution = path.join(root, "dist");
 const output = path.join(distribution, "runtime");
-const entries = ["manifest.json", "main.js", "README.md", "CHANGELOG.md", "views"];
+const entries = ["manifest.json", "main.js", "remote-workspace.js", "README.md", "CHANGELOG.md", "views"];
 
 async function rejectSymlinks(file) {
   const stat = await lstat(file);

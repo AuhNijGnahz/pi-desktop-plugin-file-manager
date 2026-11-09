@@ -16,6 +16,7 @@ import type { GitEntryStatus, ReadResponse, SqliteInfo } from "./rpc";
 export type OpenFileKind = "text" | "binary" | "image" | "media" | "pdf" | "tooLarge" | "sqlite";
 
 export type OpenFile = {
+  readOnly?: boolean;
   path: string;
   kind: OpenFileKind;
   text: string;
@@ -42,7 +43,8 @@ export type OpenFile = {
 
 /** 读响应 → 打开中的文件。字节类（图片 / 音视频 / PDF）只带 data URI，没有文本。 */
 export function toOpenFile(response: ReadResponse, loadToken: number): OpenFile {
-  const base = { path: response.path, size: response.size, mtimeMs: response.mtimeMs, loadToken };
+  const base = { path: response.path, size: response.size, mtimeMs: response.mtimeMs, loadToken,
+    ...(response.readOnly ? { readOnly: true } : {}) };
   const empty = { text: "", eol: "lf" as const, bom: false };
   // 只有文本能看差异；其余形态带过去也只是白占一个字段。
   const git = response.kind === "text" ? (response.git ?? null) : null;

@@ -140,6 +140,15 @@ try {
   assert.equal(cleanEntries.some((entry) => entry.kind === "item" && entry.label === "View Changes"), false);
   assert.equal(cleanEntries.some((entry) => entry.kind === "item" && entry.label === "Reveal in Folder"), true);
 
+  const remote = buildFileContextMenuEntries({
+    target: cleanFile, labels, readOnly: true, openWithEntries,
+    onNewFile() { assert.fail("remote create"); }, onNewFolder() { assert.fail("remote mkdir"); },
+    onRename() { assert.fail("remote rename"); }, onMove() { assert.fail("remote move"); }, onDelete() { assert.fail("remote delete"); },
+    onCopyRelativePath() {}, onCopyAbsolutePath() {}, onViewChanges() { assert.fail("remote git"); },
+    onRevealInFolder() { assert.fail("remote local reveal"); }, onRefresh() {},
+  });
+  assert.deepEqual(names(remote), ["Copy Relative Path", "Copy Absolute Path", "|", "Refresh"]);
+
   console.log("Context menu grouping, applicability, and action targets passed.");
 } finally {
   rmSync(temp, { recursive: true, force: true });

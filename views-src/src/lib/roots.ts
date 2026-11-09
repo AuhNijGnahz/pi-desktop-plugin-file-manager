@@ -26,6 +26,7 @@ export type ProjectWorkspace = {
   projectId?: string;
   /** 组的全部 folder root，按组顺序、主根在前。 */
   roots?: WorkspaceRoot[];
+  remote?: { path: string; readOnly: true };
 };
 
 /** 一个绝对路径落在某个 root 里时给出的那一份：基点 root 与它内部的相对路径。 */
